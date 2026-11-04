@@ -74,7 +74,8 @@ pub struct Mutation<'a> {
     pub receipt: &'a Receipt,
 }
 
-/// The caller serializes whole memory operations, including reads before commits.
+/// The caller holds a shared lock for each complete get/search operation.
+/// Mutations hold an exclusive lock through receipt checks, reads, and durable commit.
 /// The caller owns validation, grants, revisions, and retry policy.
 pub trait Storage: Send + Sync {
     fn read(&self, id: &str) -> impl Future<Output = Result<Option<Memory>>> + Send;
@@ -84,7 +85,7 @@ pub trait Storage: Send + Sync {
     fn search(&self, query: SearchQuery<'_>)
     -> impl Future<Output = Result<Vec<SearchHit>>> + Send;
 
-    /// Read the receipt and memory existence under the caller's serialization.
+    /// Read the receipt and memory existence under the caller's exclusive lock.
     fn receipt(
         &self,
         grant_id: &str,

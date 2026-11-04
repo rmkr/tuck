@@ -5,7 +5,7 @@ The approved specification is [#1](https://github.com/rmkr/tuck/issues/1). The l
 ## Approved direction
 
 - Build a local Rust MCP application for one user on macOS.
-- Keep memory rules behind a database-independent storage interface. Use embedded Turso as the current adapter. Each replacement must pass the same search, persistence, recovery, and access tests. The optional SurrealDB adapter is tracked in [#9](https://github.com/rmkr/tuck/issues/9).
+- Keep memory rules behind a database-independent storage interface. Support embedded Turso and optional embedded SurrealDB for new stores. Both adapters must pass the same search, persistence, recovery, and access tests. Track this extension in [#9](https://github.com/rmkr/tuck/issues/9).
 - Start with explicit saves and keyword search. Store current content with revision numbers and source metadata.
 - Test through the public MCP interface with real storage. Verify the complete lifecycle in two independently authenticated headless agent/client sessions.
 - Validate direct MCP connections. Editors are optional. Zed is the default editor when one is used.

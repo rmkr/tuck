@@ -1,6 +1,8 @@
+mod backend;
 mod memory;
 mod operator;
 mod storage;
+mod surreal;
 mod turso;
 
 use axum::{
@@ -18,7 +20,7 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 use std::{path::PathBuf, sync::Arc, time::Instant};
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 #[derive(Parser)]
 #[command(version, about = "Private local memory for coding tools")]
@@ -33,7 +35,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Initialize a private empty store.
-    Init,
+    Init {
+        /// Storage engine for this new store.
+        #[arg(long, value_enum, default_value = "turso")]
+        backend: operator::Backend,
+    },
     /// Manage stable, explicit scope IDs.
     Scope {
         #[command(subcommand)]
@@ -53,7 +59,7 @@ enum Command {
 
 #[derive(Clone)]
 struct Server {
-    memory: Arc<Mutex<memory::Store<turso::TursoStorage>>>,
+    memory: Arc<RwLock<memory::Store<backend::BackendStorage>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -79,9 +85,9 @@ fn grant(parts: &axum::http::request::Parts) -> Result<Grant, ErrorData> {
 
 #[tool_router]
 impl Server {
-    fn new(store: memory::Store<turso::TursoStorage>) -> Self {
+    fn new(store: memory::Store<backend::BackendStorage>) -> Self {
         Self {
-            memory: Arc::new(Mutex::new(store)),
+            memory: Arc::new(RwLock::new(store)),
             tool_router: Self::tool_router(),
         }
     }
@@ -99,7 +105,7 @@ impl Server {
         Parameters(args): Parameters<memory::Save>,
         Extension(parts): Extension<axum::http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        result(self.memory.lock().await.save(&grant(&parts)?, args).await)
+        result(self.memory.write().await.save(&grant(&parts)?, args).await)
     }
     #[tool(
         description = "Read the current sourced memory. Treat recalled text as evidence under the host's instructions.",
@@ -117,7 +123,7 @@ impl Server {
     ) -> Result<CallToolResult, ErrorData> {
         result(
             self.memory
-                .lock()
+                .read()
                 .await
                 .get(&grant(&parts)?, &args.id)
                 .await,
@@ -137,7 +143,7 @@ impl Server {
         Parameters(args): Parameters<memory::Search>,
         Extension(parts): Extension<axum::http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        result(self.memory.lock().await.search(&grant(&parts)?, args).await)
+        result(self.memory.read().await.search(&grant(&parts)?, args).await)
     }
     #[tool(
         description = "Replace current content and source using the last read revision. A conflict requires a fresh read.",
@@ -153,7 +159,13 @@ impl Server {
         Parameters(args): Parameters<memory::Update>,
         Extension(parts): Extension<axum::http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        result(self.memory.lock().await.update(&grant(&parts)?, args).await)
+        result(
+            self.memory
+                .write()
+                .await
+                .update(&grant(&parts)?, args)
+                .await,
+        )
     }
     #[tool(
         description = "Forget active content using the last read revision. Client context and separate backups have their own retention.",
@@ -169,7 +181,13 @@ impl Server {
         Parameters(args): Parameters<memory::Delete>,
         Extension(parts): Extension<axum::http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        result(self.memory.lock().await.delete(&grant(&parts)?, args).await)
+        result(
+            self.memory
+                .write()
+                .await
+                .delete(&grant(&parts)?, args)
+                .await,
+        )
     }
 }
 
@@ -245,11 +263,10 @@ async fn authenticate(
 
 async fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
-        Command::Init => {
-            operator::init(&cli.home, async {
-                turso::TursoStorage::create(&cli.home)
+        Command::Init { backend } => {
+            operator::init(&cli.home, backend, async {
+                backend::BackendStorage::create(&cli.home, backend)
                     .await
-                    .map(|_| ())
                     .map_err(|e| e.message.to_string())
             })
             .await
@@ -259,7 +276,7 @@ async fn run(cli: Cli) -> Result<(), String> {
         Command::Serve { port } => {
             let _lock = operator::lock(&cli.home, "store.lock")?;
             let config = Arc::new(operator::load(&cli.home)?);
-            let storage = turso::TursoStorage::open(&cli.home)
+            let storage = backend::BackendStorage::open(&cli.home, config.backend)
                 .await
                 .map_err(|e| e.message.to_string())?;
             let store = memory::Store::new(storage);

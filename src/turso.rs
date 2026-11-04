@@ -4,6 +4,7 @@ use crate::{
     storage::{Mutation, Operation, Receipt, ReceiptState, SearchHit, SearchQuery, Storage},
 };
 use std::path::Path;
+use tokio::sync::Mutex;
 use turso::{Connection, Database, params};
 
 impl From<turso::Error> for Failure {
@@ -17,6 +18,8 @@ impl From<turso::Error> for Failure {
 
 pub struct TursoStorage {
     connection: Connection,
+    // Keep read statements serialized on the single Turso connection.
+    read_lock: Mutex<()>,
     _database: Database,
 }
 impl TursoStorage {
@@ -46,6 +49,7 @@ impl TursoStorage {
         }
         Ok(Self {
             connection,
+            read_lock: Mutex::new(()),
             _database: db,
         })
     }
@@ -89,7 +93,9 @@ impl TursoStorage {
             ));
         }
         drop(store);
-        Self::connect(home, false).await
+        let store = Self::connect(home, false).await?;
+        pause("open:backend").await?;
+        Ok(store)
     }
     pub async fn create(home: &Path) -> Result<Self> {
         if home.join("memory.db").exists() {
@@ -112,6 +118,7 @@ impl TursoStorage {
 }
 impl Storage for TursoStorage {
     async fn read(&self, id: &str) -> Result<Option<Memory>> {
+        let _read = self.read_lock.lock().await;
         let mut rows = self
             .connection
             .query("SELECT record FROM memories WHERE id=?", [id])
@@ -122,6 +129,7 @@ impl Storage for TursoStorage {
         Ok(Some(serde_json::from_str(&row.get::<String>(0)?)?))
     }
     async fn search(&self, query: SearchQuery<'_>) -> Result<Vec<SearchHit>> {
+        let _read = self.read_lock.lock().await;
         let placeholders = |n| std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",");
         // Rank small ID rows before loading full records for the bounded result.
         let sql = format!(
@@ -204,7 +212,7 @@ impl Storage for TursoStorage {
                     ],
                 )
                 .await?;
-                pause("save:record").await;
+                pause("save:record").await?;
             }
             Operation::Update => {
                 tx.execute(
@@ -216,17 +224,17 @@ impl Storage for TursoStorage {
                     ],
                 )
                 .await?;
-                pause("update:record").await;
+                pause("update:record").await?;
                 tx.execute("DELETE FROM terms WHERE memory_id=?", [memory.id.clone()])
                     .await?;
             }
             Operation::Delete => {
                 tx.execute("DELETE FROM terms WHERE memory_id=?", [memory.id.clone()])
                     .await?;
-                pause("delete:index").await;
+                pause("delete:index").await?;
                 tx.execute("DELETE FROM memories WHERE id=?", [memory.id.clone()])
                     .await?;
-                pause("delete:record").await;
+                pause("delete:record").await?;
             }
         }
         if !matches!(mutation.operation, Operation::Delete) {
@@ -237,7 +245,7 @@ impl Storage for TursoStorage {
                 )
                 .await?;
             }
-            pause(&format!("{operation}:index")).await;
+            pause(&format!("{operation}:index")).await?;
         }
         tx.execute(
             "INSERT INTO receipts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -253,17 +261,23 @@ impl Storage for TursoStorage {
             ],
         )
         .await?;
-        pause(&format!("{operation}:before_commit")).await;
+        pause(&format!("{operation}:receipt")).await?;
+        pause(&format!("{operation}:before_commit")).await?;
         tx.commit().await?;
-        pause(&format!("{operation}:after_commit")).await;
+        pause(&format!("{operation}:after_commit")).await?;
         Ok(())
     }
 }
 
-async fn pause(_stage: &str) {
+async fn pause(_stage: &str) -> Result<()> {
+    #[cfg(feature = "test-hooks")]
+    if std::env::var("TUCK_TEST_FAIL").as_deref() == Ok(_stage) {
+        return Err(fail("storage_error", "Injected storage write failure."));
+    }
     #[cfg(feature = "test-hooks")]
     if std::env::var("TUCK_TEST_PAUSE").as_deref() == Ok(_stage) {
         eprintln!("TUCK_TEST_PAUSED {_stage}");
         std::future::pending::<()>().await;
     }
+    Ok(())
 }

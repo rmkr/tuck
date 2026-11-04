@@ -1,6 +1,6 @@
 # Turso with a transactional keyword index
 
-Turso remains the current storage adapter. [ADR 0002](0002-database-independent-storage.md) records the later decision to keep memory rules independent of the engine.
+Turso remains the default storage adapter. [ADR 0002](0002-database-independent-storage.md) records the later decision to keep memory rules independent of the engine.
 
 Tuck uses pinned Turso 0.8.3 with one database-owning process and one serialized connection. The public MCP tests passed persistence, source and identifier search, concurrent corrections, retry receipts, deletion, and twelve forced-stop positions across save, update, and delete.
 

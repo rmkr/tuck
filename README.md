@@ -1,8 +1,8 @@
 # Tuck
 
-Tuck shares selected memories between authenticated coding agents on one Mac. It runs locally and currently stores sourced memories through an embedded Turso adapter.
+Tuck shares selected memories between authenticated coding agents on one Mac. It runs locally with a choice of embedded Turso or SurrealDB storage.
 
-The memory module uses a database-independent storage interface. It owns access checks, validation, revisions, retry rules, and response formats. Storage adapters own persistence and atomic commits. An optional SurrealDB adapter is tracked in [#9](https://github.com/rmkr/tuck/issues/9).
+The memory module uses a database-independent storage interface. It owns access checks, validation, revisions, retry rules, and response formats. Each storage adapter connects that interface to one database engine and owns persistence and atomic commits.
 
 Agents connect directly over MCP, the Model Context Protocol. Each agent receives its own credential and explicit scopes. An editor is optional.
 
@@ -31,6 +31,21 @@ target/release/tuck grant add agent-a --scope project:example --read --write
 target/release/tuck grant add agent-b --scope project:example --read --write
 target/release/tuck serve
 ```
+
+`init` uses Turso by default. To create a separate SurrealDB store, select it when initializing the directory. SurrealDB runs inside Tuck and stores its data locally.
+
+```sh
+target/release/tuck --home "$HOME/.local/share/tuck-surrealdb" init --backend surrealdb
+target/release/tuck --home "$HOME/.local/share/tuck-surrealdb" scope add project:example
+target/release/tuck --home "$HOME/.local/share/tuck-surrealdb" grant add agent-a --scope project:example --read --write
+target/release/tuck --home "$HOME/.local/share/tuck-surrealdb" serve
+```
+
+The store records its backend choice. Later commands use that choice. Use a new directory to select another backend. Existing Turso stores continue to open without a new backend setting.
+
+A SurrealDB `--home` path must use UTF-8 and contain no `?`. The pinned SDK treats that character as the start of connection options. Spaces, Unicode, `#`, and `%` are supported.
+
+The embedded SurrealDB 4.0.0 package and engine use the Business Source License 1.1. Review the pinned license when distributing a product that includes this option. [Package license](https://docs.rs/crate/surrealdb/4.0.0/source/LICENSE) · [Vendor license guide](https://surrealdb.com/license)
 
 Each `grant add` command prints a new secret once. Keep it in the client's secret settings or an environment variable. Tuck stores only its hash. Keep secrets out of source control and shell history.
 
@@ -148,7 +163,7 @@ Tool failures use `isError` with a JSON error containing a stable `code` and a s
 
 ## Backup and restore
 
-Stop every process that owns or changes the store before copying it. Keep the whole directory together. The copy includes `memory.db`, any `memory.db-wal` or `memory.db-shm` sidecars, and `config.json`.
+Stop every process that owns or changes the store before copying it. Keep the whole directory together. The copy includes `config.json` and all backend files. Turso uses `memory.db` and its sidecars. SurrealDB uses the entire `memory.surreal` directory, including its format marker, manifest, logs, and tables.
 
 ```sh
 umask 077
@@ -156,6 +171,8 @@ cp -Rp "$HOME/.local/share/tuck" "$HOME/tuck-backup"
 cp -Rp "$HOME/tuck-backup" "$HOME/tuck-restored"
 tuck --home "$HOME/tuck-restored" serve --port 47832
 ```
+
+Configuration written by this version records its backend. Restore it with a compatible Tuck version. Older binaries can reject the added field.
 
 Connect to port 47832 with a backed-up credential. Read a known memory and retry its saved operation ID. Confirm both before using the restored store. The process suite verifies this procedure after forced termination, including receipt and record recovery.
 
@@ -178,9 +195,10 @@ To remove Tuck, stop the process, remove its MCP entries from clients, and delet
 Run the benchmark against a normal optimized release binary.
 
 ```sh
-python3 tests/benchmark.py target/release/tuck > benchmark.json
+python3 tests/benchmark.py target/release/tuck --backend turso > benchmark-turso.json
+python3 tests/benchmark.py target/release/tuck --backend surrealdb > benchmark-surrealdb.json
 ```
 
 It seeds 1000 and 10000 memories through MCP. It uses one and four concurrent clients, reports median and p95 latency, and includes identifier and broad-keyword queries. Cold means the first request after process restart. It keeps the operating-system file cache. The proposed warm-search target is p95 at or below 100 ms over 10000 memories. Timing is evidence for the measured Mac, separate from correctness assertions.
 
-The [Turso decision](docs/adr/0001-turso-and-transactional-keyword-index.md) records the original correctness gate. The [storage interface decision](docs/adr/0002-database-independent-storage.md) records how another engine can replace it. The [validation record](docs/validation.md) contains the process tests, headless two-agent workflow, benchmark, and synthetic memory-enabled comparison. The storage-interface release measured 10000-memory warm p95 at 21.42 ms with one client and 77.06 ms with four clients on this Mac. Day-to-day productivity remains unmeasured. The [approved specification](https://github.com/rmkr/tuck/issues/1) defines acceptance.
+The [Turso decision](docs/adr/0001-turso-and-transactional-keyword-index.md) records the original correctness gate. The [storage interface decision](docs/adr/0002-database-independent-storage.md) records how another engine can replace it. The [validation record](docs/validation.md) contains the process tests, headless two-agent workflow, benchmark, and synthetic memory-enabled comparison. With 10000 memories and four clients, the current SurrealDB release measured warm-search p95 at 57.96 ms on this Mac. Three repeat runs measured 58.40–59.30 ms. These runs meet the proposed 100 ms target. The validation record keeps the earlier backend comparison and exact workload details. Day-to-day productivity remains unmeasured. The [approved specification](https://github.com/rmkr/tuck/issues/1) defines acceptance.
