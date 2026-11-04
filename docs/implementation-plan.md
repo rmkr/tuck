@@ -8,7 +8,7 @@ The approved specification is [#1](https://github.com/rmkr/tuck/issues/1). The l
 - Try embedded Turso first. Confirm its search, persistence, and recovery behavior before finalizing the engine. Evaluate SurrealDB if Turso fails a required gate.
 - Start with explicit saves and keyword search. Store current content with revision numbers and source metadata.
 - Test through the public MCP interface with real storage. Verify the complete lifecycle in two real coding clients.
-- Use Codex and VS Code as the first client targets, subject to account and capability checks.
+- Use Codex and Zed as the client targets, subject to account and capability checks. Zed is the default editor.
 - Measure the proposed 100 ms warm-search p95 target over 10,000 memories on this Mac.
 
 ## Delivery order
