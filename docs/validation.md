@@ -70,3 +70,22 @@ A matched synthetic follow-up task ran in two independent headless Codex session
 The memory-enabled session recovered `cargo test --locked --features test-hooks` and supplied its source. The memory-disabled session asked the user for the command. The local record is `/private/tmp/tuck-forge/repetition.json`.
 
 This measures one request to repeat one stored detail in a synthetic task. Day-to-day productivity and task completion time remain unmeasured.
+
+## Database-independent storage follow-up
+
+The storage-interface refactor uses the same Turso release, disk schema, and public MCP contract. Its release binary has SHA-256 `a594fce72b9eed054934e14b66f2ebc1f91129bb9b200e805e0539e7ac020b12`. Formatting, strict Clippy, and all fifteen process tests passed with `test-hooks`. The normal release passed fourteen tests and skipped the hook-only case. The eighteen supplemental headless checks passed with the new release.
+
+Eleven compatibility checks passed across the earlier `69a42e` release and this release. The new release read old records and receipts, searched their terms, preserved deletion, and corrected an old record. The earlier release then read that correction and replayed its receipt. Both releases used the same disposable store without a format conversion.
+
+The memory, storage, and operator modules also compiled in a temporary crate with a separate storage implementation and no Turso dependency. This was a compile-only check. Runtime validation used the real Turso adapter.
+
+The same benchmark was repeated through MCP with the new release. These measurements use the dataset, warm-up, sample counts, and cold definition described above.
+
+| Memories | Clients | Warm median ms | Warm p95 ms | Cold median ms | Cold p95 ms |
+| --- | --- | --- | --- | --- | --- |
+| 1000 | 1 | 1.04 | 1.51 | 2.55 | 3.13 |
+| 1000 | 4 | 3.67 | 3.98 | 4.14 | 5.92 |
+| 10000 | 1 | 12.74 | 21.42 | 16.31 | 24.11 |
+| 10000 | 4 | 61.37 | 77.06 | 34.59 | 64.50 |
+
+The 10000-memory warm measurements remain within the 100 ms target. Run evidence is in `/private/tmp/tuck-storage-review/benchmark.json`, `legacy-store.json`, and `headless-acceptance.json`. The optional SurrealDB adapter is tracked in [#9](https://github.com/rmkr/tuck/issues/9). It has no runtime validation yet.
