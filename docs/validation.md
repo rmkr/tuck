@@ -92,9 +92,9 @@ The 10000-memory warm measurements remain within the 100 ms target. Run evidence
 
 ## Optional SurrealDB backend
 
-The optional backend uses SurrealDB 4.0.0 with SurrealKV 1.2.0 and explicit `SyncMode::Every`. The reviewed normal release has SHA-256 `58d0d1b58b91ca954add3a42c15529f0c11469b968f41024409ba4f8d90043d6`. Both adapters use the same memory module and public MCP contract.
+The optional backend uses SurrealDB 4.0.0 with SurrealKV 1.2.0 and explicit `SyncMode::Every`. The final normal release has SHA-256 `9e0457d60082d1e92fecafb1200aa7d440d68e3d0be0508f4dafc5b39e176122`. Both adapters use the same memory module and public MCP contract.
 
-All 48 feature-enabled process tests passed, with 24 cases for each backend and no skips. The normal release passed 20 cases per backend and skipped four cases per backend that require the compile-time test hooks. Formatting and strict Clippy passed. The tests cover initialization, recorded backend selection, legacy Turso configuration, ranked search, permissions, concurrent changes, retry receipts, deletion, restarts, forced termination, failed writes, and backup and restore.
+All 50 feature-enabled process tests passed, with 25 cases for each backend and no skips. The normal release passed 21 cases per backend and skipped four cases per backend that require the compile-time test hooks. Formatting and strict Clippy passed. The tests cover initialization, recorded backend selection, legacy Turso configuration, ranked search, permissions, concurrent changes, retry receipts, deletion, restarts, forced termination, failed writes, and backup and restore.
 
 The independent direct-client checks passed 18 assertions for each backend. Eleven additional checks opened a store from the earlier Turso release, read its records and receipts, corrected a record with the new release, and reopened it with the earlier release. The store needed no format conversion.
 
@@ -104,7 +104,7 @@ The first benchmark also exposed a multi-term query plan that scanned the scope 
 
 The evidence is in `/private/tmp/tuck-surrealdb-review/`. Process termination was tested. Physical power-loss recovery was not tested.
 
-The final benchmark ran after the build and correctness checks finished. It used the same datasets, 100 warm requests after 20 warm-up requests, and five cold restart trials per scenario. Each backend used the same normal release binary.
+The benchmark ran after the build and correctness checks finished on binary `58d0d1b58b91ca954add3a42c15529f0c11469b968f41024409ba4f8d90043d6`. The later final binary adds a startup file-type check and its regression test. Its search and transaction code are identical to the measured binary. It used the same datasets, 100 warm requests after 20 warm-up requests, and five cold restart trials per scenario. Each backend used the same measured normal release binary.
 
 | Backend | Memories | Clients | Warm median ms | Warm p95 ms | Cold median ms | Cold p95 ms |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -120,3 +120,5 @@ The final benchmark ran after the build and correctness checks finished. It used
 Turso met the proposed 100 ms warm p95 target with one and four clients at 10000 memories. SurrealDB met it with one client. Its four-client result was 165.15 ms, above that target. SurrealDB is an optional backend, and Turso remains the default. These measurements describe this Mac and workload. Large scope/term requests use the fallback query and may take longer.
 
 The final results are in `/private/tmp/tuck-surrealdb-review/benchmark-final-turso.json` and `benchmark-final-surrealdb.json`. The first timing run overlapped compiler work and was used only to find the query-plan issue.
+
+A later review found that a private named pipe at a format-marker path could block startup before the recursive file checks. An independent verifier reproduced both affected paths. The final fix checks file types before reading them. The named-pipe regressions pass on both engines, including the normal release.

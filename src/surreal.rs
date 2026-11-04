@@ -143,12 +143,7 @@ impl SurrealStorage {
             path.join(MANIFEST),
         ] {
             fs::symlink_metadata(&checked).map_err(storage_error)?;
-            operator::private(&checked).map_err(|_| {
-                fail(
-                    "permissions",
-                    "Database files must be private and owned by you.",
-                )
-            })?;
+            private_tree(&checked)?;
         }
         if !path.is_dir() {
             return Err(fail(

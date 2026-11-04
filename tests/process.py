@@ -32,8 +32,8 @@ class Server:
         self.token = None
         self.port = None
 
-    def command(self, *args):
-        return subprocess.run([BINARY, '--home', str(self.home), *args], capture_output=True, text=True, timeout=10)
+    def command(self, *args, timeout=10):
+        return subprocess.run([BINARY, '--home', str(self.home), *args], capture_output=True, text=True, timeout=timeout)
 
     def init(self):
         result = self.command('init', '--backend', BACKEND)
@@ -692,6 +692,33 @@ class Contract(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
             finally:
                 s.close()
+
+    def test_fifo_database_files_fail_promptly(self):
+        s = self.server
+        saved = s.save()
+        s.stop()
+        targets = ['memory.db'] if BACKEND == 'turso' else [
+            'memory.surreal/tuck-format',
+            'memory.surreal/manifest/00000000000000000000.manifest',
+        ]
+        for name in targets:
+            with self.subTest(path=name):
+                path = s.home / name
+                parked = path.with_name(path.name + '.saved')
+                path.rename(parked)
+                os.mkfifo(path, 0o600)
+                before = tree_bytes(s.home)
+                try:
+                    failure = s.command('serve', timeout=2)
+                    self.assertNotEqual(failure.returncode, 0)
+                    self.assertIn('database', failure.stderr.lower())
+                    self.assertTrue(path.is_fifo())
+                    self.assertEqual(tree_bytes(s.home), before)
+                finally:
+                    path.unlink()
+                    parked.rename(path)
+        s.start()
+        self.assertEqual(s.save(), saved)
 
     def test_private_nested_files_and_no_overwrite_on_init(self):
         s = self.server
