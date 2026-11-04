@@ -7,8 +7,8 @@ The approved specification is [#1](https://github.com/rmkr/tuck/issues/1). The l
 - Build a local Rust MCP application for one user on macOS.
 - Try embedded Turso first. Confirm its search, persistence, and recovery behavior before finalizing the engine. Evaluate SurrealDB if Turso fails a required gate.
 - Start with explicit saves and keyword search. Store current content with revision numbers and source metadata.
-- Test through the public MCP interface with real storage. Verify the complete lifecycle in two real coding clients.
-- Use Codex and Zed as the client targets, subject to account and capability checks. Zed is the default editor.
+- Test through the public MCP interface with real storage. Verify the complete lifecycle in two independently authenticated headless agent/client sessions.
+- Validate direct MCP connections. Editors are optional. Zed is the default editor when one is used.
 - Measure the proposed 100 ms warm-search p95 target over 10,000 memories on this Mac.
 
 ## Delivery order
@@ -20,7 +20,7 @@ The approved specification is [#1](https://github.com/rmkr/tuck/issues/1). The l
 | 3 | [#4](https://github.com/rmkr/tuck/issues/4) | Revision-checked corrections and safe mutation retries. | [#3](https://github.com/rmkr/tuck/issues/3) |
 | 4 | [#5](https://github.com/rmkr/tuck/issues/5) | Deletion that remains effective after retries and restarts. | [#4](https://github.com/rmkr/tuck/issues/4) |
 | 5 | [#6](https://github.com/rmkr/tuck/issues/6) | Operator setup, safe startup, recovery, and verified backup/restore. | [#3](https://github.com/rmkr/tuck/issues/3) |
-| 6 | [#7](https://github.com/rmkr/tuck/issues/7) | Two-client workflow, latency results, and a measured benefit comparison. | [#5](https://github.com/rmkr/tuck/issues/5), [#6](https://github.com/rmkr/tuck/issues/6) |
+| 6 | [#7](https://github.com/rmkr/tuck/issues/7) | Headless two-client workflow, latency results, and a measured benefit comparison. | [#5](https://github.com/rmkr/tuck/issues/5), [#6](https://github.com/rmkr/tuck/issues/6) |
 
 ## Dependencies
 
@@ -40,4 +40,4 @@ Start with the first ticket. Safe corrections and operator recovery can proceed 
 
 Use the approved public MCP test seam with an isolated real database and the running process. Add one failing behavior test, implement that behavior, and repeat. Run the code-review skill before committing each implementation slice.
 
-The final ticket checks actual coding clients, restart behavior, measured latency, and memory-enabled versus memory-disabled work. These checks remain pending until implementation.
+The final ticket checks independent headless agent/client sessions, restart behavior, measured latency, and memory-enabled versus memory-disabled work. These checks remain pending until implementation.
