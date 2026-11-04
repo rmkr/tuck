@@ -89,7 +89,9 @@ impl TursoStorage {
             ));
         }
         drop(store);
-        Self::connect(home, false).await
+        let store = Self::connect(home, false).await?;
+        pause("open:backend").await?;
+        Ok(store)
     }
     pub async fn create(home: &Path) -> Result<Self> {
         if home.join("memory.db").exists() {

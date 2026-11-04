@@ -163,7 +163,7 @@ Tool failures use `isError` with a JSON error containing a stable `code` and a s
 
 ## Backup and restore
 
-Stop every process that owns or changes the store before copying it. Keep the whole directory together. The copy includes `memory.db`, any `memory.db-wal` or `memory.db-shm` sidecars, and `config.json`.
+Stop every process that owns or changes the store before copying it. Keep the whole directory together. The copy includes `config.json` and all backend files. Turso uses `memory.db` and its sidecars. SurrealDB uses the entire `memory.surreal` directory, including its format marker, manifest, logs, and tables.
 
 ```sh
 umask 077
@@ -171,6 +171,8 @@ cp -Rp "$HOME/.local/share/tuck" "$HOME/tuck-backup"
 cp -Rp "$HOME/tuck-backup" "$HOME/tuck-restored"
 tuck --home "$HOME/tuck-restored" serve --port 47832
 ```
+
+Configuration written by this version records its backend. Restore it with a compatible Tuck version. Older binaries can reject the added field.
 
 Connect to port 47832 with a backed-up credential. Read a known memory and retry its saved operation ID. Confirm both before using the restored store. The process suite verifies this procedure after forced termination, including receipt and record recovery.
 
@@ -193,9 +195,10 @@ To remove Tuck, stop the process, remove its MCP entries from clients, and delet
 Run the benchmark against a normal optimized release binary.
 
 ```sh
-python3 tests/benchmark.py target/release/tuck > benchmark.json
+python3 tests/benchmark.py target/release/tuck --backend turso > benchmark-turso.json
+python3 tests/benchmark.py target/release/tuck --backend surrealdb > benchmark-surrealdb.json
 ```
 
 It seeds 1000 and 10000 memories through MCP. It uses one and four concurrent clients, reports median and p95 latency, and includes identifier and broad-keyword queries. Cold means the first request after process restart. It keeps the operating-system file cache. The proposed warm-search target is p95 at or below 100 ms over 10000 memories. Timing is evidence for the measured Mac, separate from correctness assertions.
 
-The [Turso decision](docs/adr/0001-turso-and-transactional-keyword-index.md) records the original correctness gate. The [storage interface decision](docs/adr/0002-database-independent-storage.md) records how another engine can replace it. The [validation record](docs/validation.md) contains the process tests, headless two-agent workflow, benchmark, and synthetic memory-enabled comparison. The storage-interface release measured 10000-memory warm p95 at 21.42 ms with one client and 77.06 ms with four clients on this Mac. Day-to-day productivity remains unmeasured. The [approved specification](https://github.com/rmkr/tuck/issues/1) defines acceptance.
+The [Turso decision](docs/adr/0001-turso-and-transactional-keyword-index.md) records the original correctness gate. The [storage interface decision](docs/adr/0002-database-independent-storage.md) records how another engine can replace it. The [validation record](docs/validation.md) contains the process tests, headless two-agent workflow, benchmark, and synthetic memory-enabled comparison. With 10000 memories and four clients, the final release measured warm-search p95 at 40.45 ms for Turso and 165.15 ms for SurrealDB on this Mac. The proposed target is 100 ms. Turso remains the default. Day-to-day productivity remains unmeasured. The [approved specification](https://github.com/rmkr/tuck/issues/1) defines acceptance.

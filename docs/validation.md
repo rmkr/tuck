@@ -89,3 +89,34 @@ The same benchmark was repeated through MCP with the new release. These measurem
 | 10000 | 4 | 61.37 | 77.06 | 34.59 | 64.50 |
 
 The 10000-memory warm measurements remain within the 100 ms target. Run evidence is in `/private/tmp/tuck-storage-review/benchmark.json`, `legacy-store.json`, and `headless-acceptance.json`. The optional SurrealDB adapter is tracked in [#9](https://github.com/rmkr/tuck/issues/9). It has no runtime validation yet.
+
+## Optional SurrealDB backend
+
+The optional backend uses SurrealDB 4.0.0 with SurrealKV 1.2.0 and explicit `SyncMode::Every`. The reviewed normal release has SHA-256 `58d0d1b58b91ca954add3a42c15529f0c11469b968f41024409ba4f8d90043d6`. Both adapters use the same memory module and public MCP contract.
+
+All 48 feature-enabled process tests passed, with 24 cases for each backend and no skips. The normal release passed 20 cases per backend and skipped four cases per backend that require the compile-time test hooks. Formatting and strict Clippy passed. The tests cover initialization, recorded backend selection, legacy Turso configuration, ranked search, permissions, concurrent changes, retry receipts, deletion, restarts, forced termination, failed writes, and backup and restore.
+
+The independent direct-client checks passed 18 assertions for each backend. Eleven additional checks opened a store from the earlier Turso release, read its records and receipts, corrected a record with the new release, and reopened it with the earlier release. The store needed no format conversion.
+
+The first independent review found a startup recovery defect. SurrealKV sets its WAL directory to `0750` during opening. A process killed before Tuck restored `0700` could leave an intact store unable to restart. A separate verifier reproduced that exact process-kill window. The fix recognizes only that owned directory state under a private, valid store, checks its contents, and restores `0700`. Public files, symlinks, wrong owners, and other directory modes remain rejected. A deterministic startup-kill regression now passes.
+
+The first benchmark also exposed a multi-term query plan that scanned the scope before filtering terms. A bounded query change now uses exact composite-index lookups for up to 16 scope/term pairs. Larger requests use the original scoped query. Public tests verify both paths, duplicate scopes, and a 1024-byte query with 128 scopes.
+
+The evidence is in `/private/tmp/tuck-surrealdb-review/`. Process termination was tested. Physical power-loss recovery was not tested.
+
+The final benchmark ran after the build and correctness checks finished. It used the same datasets, 100 warm requests after 20 warm-up requests, and five cold restart trials per scenario. Each backend used the same normal release binary.
+
+| Backend | Memories | Clients | Warm median ms | Warm p95 ms | Cold median ms | Cold p95 ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| turso | 1000 | 1 | 1.08 | 1.49 | 2.22 | 2.75 |
+| turso | 1000 | 4 | 3.57 | 3.74 | 3.74 | 5.19 |
+| turso | 10000 | 1 | 8.28 | 13.82 | 11.53 | 19.37 |
+| turso | 10000 | 4 | 37.55 | 40.45 | 27.60 | 42.45 |
+| surrealdb | 1000 | 1 | 4.13 | 6.16 | 5.91 | 7.38 |
+| surrealdb | 1000 | 4 | 16.63 | 17.75 | 13.91 | 20.35 |
+| surrealdb | 10000 | 1 | 26.89 | 46.37 | 30.16 | 49.26 |
+| surrealdb | 10000 | 4 | 136.84 | 165.15 | 77.49 | 125.86 |
+
+Turso met the proposed 100 ms warm p95 target with one and four clients at 10000 memories. SurrealDB met it with one client. Its four-client result was 165.15 ms, above that target. SurrealDB is an optional backend, and Turso remains the default. These measurements describe this Mac and workload. Large scope/term requests use the fallback query and may take longer.
+
+The final results are in `/private/tmp/tuck-surrealdb-review/benchmark-final-turso.json` and `benchmark-final-surrealdb.json`. The first timing run overlapped compiler work and was used only to find the query-plan issue.

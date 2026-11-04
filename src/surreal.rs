@@ -6,7 +6,7 @@ use crate::{
 use std::{
     fs,
     io::{Read, Write},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::Path,
 };
 use surrealdb::{
@@ -78,6 +78,7 @@ impl SurrealStorage {
         let database = Surreal::new::<SurrealKv>((path, config))
             .sync(SyncMode::Every)
             .await?;
+        pause("open:backend").await?;
         // SurrealKV resets this directory to 0750 on every open, even when it already exists.
         fs::set_permissions(
             home.join("memory.surreal/wal"),
@@ -130,7 +131,25 @@ impl SurrealStorage {
 
     pub async fn open(home: &Path) -> Result<Self> {
         let path = home.join("memory.surreal");
-        private_tree(&path)?;
+        operator::private(&path).map_err(|_| {
+            fail(
+                "permissions",
+                "Database files must be private and owned by you.",
+            )
+        })?;
+        for checked in [
+            path.join("tuck-format"),
+            path.join("manifest"),
+            path.join(MANIFEST),
+        ] {
+            fs::symlink_metadata(&checked).map_err(storage_error)?;
+            operator::private(&checked).map_err(|_| {
+                fail(
+                    "permissions",
+                    "Database files must be private and owned by you.",
+                )
+            })?;
+        }
         if !path.is_dir() {
             return Err(fail(
                 "schema",
@@ -155,6 +174,19 @@ impl SurrealStorage {
                 "Database format is invalid or unsupported. Restore the complete store before starting.",
             ));
         }
+        let wal = path.join("wal");
+        let metadata = fs::symlink_metadata(&wal).map_err(storage_error)?;
+        // A killed engine open can leave its owned WAL directory at exactly 0750.
+        if metadata.is_dir()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.permissions().mode() & 0o7777 == 0o750
+        {
+            for entry in fs::read_dir(&wal).map_err(storage_error)? {
+                private_tree(&entry.map_err(storage_error)?.path())?;
+            }
+            fs::set_permissions(&wal, fs::Permissions::from_mode(0o700)).map_err(storage_error)?;
+        }
+        private_tree(&path)?;
         let store = Self::connect(home).await?;
         let mut response = store
             .database
@@ -208,12 +240,29 @@ impl Storage for SurrealStorage {
     }
 
     async fn search(&self, query: SearchQuery<'_>) -> Result<Vec<SearchHit>> {
+        // Cap exact-seek branches at 16 to keep generated SQL small for large supported inputs.
+        let sql = if (1..=16).contains(&(query.scopes.len() * query.terms.len())) {
+            let mut branches = Vec::new();
+            for scope in 0..query.scopes.len() {
+                for term in 0..query.terms.len() {
+                    branches.push(format!(
+                        "(scope = $scopes[{scope}] AND term = $terms[{term}])"
+                    ));
+                }
+            }
+            format!(
+                "SELECT memory_id, count() AS score FROM terms WITH INDEX terms_lookup WHERE {} GROUP BY memory_id ORDER BY score DESC, memory_id ASC LIMIT $limit",
+                branches.join(" OR ")
+            )
+        } else {
+            SEARCH.to_owned()
+        };
         // Rank indexed scope/term rows first. Only bounded winners load full memory records.
         #[cfg(feature = "test-hooks")]
         if std::env::var_os("TUCK_TEST_ASSERT_INDEX").is_some() {
             let mut plan = self
                 .database
-                .query(format!("EXPLAIN {SEARCH}"))
+                .query(format!("EXPLAIN {sql}"))
                 .bind(("scopes", query.scopes.to_vec()))
                 .bind(("terms", query.terms.iter().cloned().collect::<Vec<_>>()))
                 .bind(("limit", query.limit as i64))
@@ -221,7 +270,12 @@ impl Storage for SurrealStorage {
                 .check()?;
             let plan: surrealdb::types::Value = plan.take(0)?;
             let plan = format!("{plan:?}");
-            if !plan.contains("terms_lookup") || plan.contains("TableScan") {
+            if !plan.contains("terms_lookup")
+                || plan.contains("TableScan")
+                || (query.scopes.len() == 1
+                    && (2..=16).contains(&query.terms.len())
+                    && !plan.contains("UnionIndexScan"))
+            {
                 return Err(fail(
                     "storage_error",
                     "Search must use the scoped term index.",
@@ -231,7 +285,7 @@ impl Storage for SurrealStorage {
         }
         let mut response = self
             .database
-            .query(SEARCH)
+            .query(sql)
             .bind(("scopes", query.scopes.to_vec()))
             .bind(("terms", query.terms.iter().cloned().collect::<Vec<_>>()))
             .bind(("limit", query.limit as i64))

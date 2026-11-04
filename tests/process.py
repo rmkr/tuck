@@ -51,7 +51,7 @@ class Server:
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    def start(self, pause=None, file_limit=None, fail=None, assert_index=False):
+    def start(self, pause=None, file_limit=None, fail=None, assert_index=False, wait_for_pause=False):
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             self.port = sock.getsockname()[1]
@@ -73,6 +73,10 @@ class Server:
             if self.process.poll() is not None:
                 self.logs.seek(0)
                 raise AssertionError(self.logs.read().decode())
+            if wait_for_pause:
+                self.logs.seek(0)
+                if ('TUCK_TEST_PAUSED ' + pause).encode() in self.logs.read():
+                    return
             try:
                 with socket.create_connection(('127.0.0.1', self.port), .05):
                     return
@@ -391,6 +395,79 @@ class Contract(unittest.TestCase):
         if BACKEND == 'surrealdb':
             s.logs.seek(0)
             self.assertIn(b'TUCK_TEST_INDEX terms_lookup', s.logs.read())
+
+    @unittest.skipUnless(os.environ.get('TUCK_TEST_HOOKS') == '1', 'requires cargo test --features test-hooks')
+    def test_interrupted_startup_preserves_the_store(self):
+        s = self.server
+        saved = s.save()
+        s.stop()
+        s.start(pause='open:backend', wait_for_pause=True)
+        if BACKEND == 'surrealdb':
+            self.assertEqual((s.home / 'memory.surreal/wal').stat().st_mode & 0o7777, 0o750)
+        s.stop(kill=True)
+        s.start()
+        self.assertEqual(s.save(), saved)
+        self.assertEqual(s.call('memory_search', {'query':'Widget::parse', 'scopes':['project:a']})[0]['id'], saved['id'])
+        if BACKEND == 'surrealdb':
+            self.assertEqual((s.home / 'memory.surreal/wal').stat().st_mode & 0o7777, 0o700)
+
+    def test_large_scoped_search_preserves_ranking(self):
+        s = self.server
+        scopes = ['project:a'] + [f'project:scope{i}' for i in range(127)]
+        for scope in scopes[1:]:
+            self.assertEqual(s.command('scope', 'add', scope).returncode, 0)
+        token = s.grant('many-scopes', scopes, True)
+        s.stop()
+        s.start()
+        best = s.save('ranked', 'alpha beta gamma', token=token)
+        second = s.save('second', 'alpha beta', scope=scopes[1], token=token)
+        s.save('hidden', 'alpha beta gamma delta', scope=scopes[2], token=token)
+        limited = s.call('memory_search', {'query':'alpha beta gamma', 'scopes':scopes[:2], 'limit':1}, token)
+        self.assertEqual(limited[0]['id'], best['id'])
+        self.assertEqual(limited[0]['score'], 3)
+        duplicate = s.call('memory_search', {'query':'alpha beta gamma', 'scopes':[scopes[0], scopes[0]], 'limit':1}, token)
+        self.assertEqual(duplicate[0]['score'], 3)
+        large_query = 'alpha beta gamma ' + ' '.join(f'q{i:03}' for i in range(200))
+        large_query = large_query.ljust(1024)
+        self.assertEqual(len(large_query), 1024)
+        results = s.call('memory_search', {'query':large_query, 'scopes':scopes, 'limit':20}, token)
+        expected = sorted([best['id'], s.call('memory_search', {'query':'delta', 'scopes':[scopes[2]]}, token)[0]['id']])
+        self.assertEqual([hit['id'] for hit in results[:2]], expected)
+        self.assertEqual([hit['score'] for hit in results], [3, 3, 2])
+        self.assertEqual(results[2]['id'], second['id'])
+
+    def test_public_wal_files_are_rejected(self):
+        s = self.server
+        saved = s.save()
+        s.stop()
+        directory = s.home / ('memory.surreal/wal' if BACKEND == 'surrealdb' else '.')
+        for mode in [0o751, 0o755, 0o770]:
+            directory.chmod(mode)
+            before = tree_bytes(s.home)
+            self.assertNotEqual(s.command('serve').returncode, 0)
+            self.assertEqual(tree_bytes(s.home), before)
+            self.assertEqual(directory.stat().st_mode & 0o7777, mode)
+            directory.chmod(0o700)
+        if BACKEND == 'surrealdb':
+            public = directory / 'public-fixture'
+            public.write_text('retain this fixture')
+            public.chmod(0o644)
+            directory.chmod(0o750)
+            before = tree_bytes(s.home)
+            self.assertNotEqual(s.command('serve').returncode, 0)
+            self.assertEqual(tree_bytes(s.home), before)
+            self.assertEqual(public.stat().st_mode & 0o7777, 0o644)
+            self.assertEqual(directory.stat().st_mode & 0o7777, 0o750)
+            public.unlink()
+            # An unexpected symlink cannot qualify for WAL directory recovery.
+            parked = s.home / 'parked-wal'
+            directory.rename(parked)
+            directory.symlink_to(parked, target_is_directory=True)
+            self.assertNotEqual(s.command('serve').returncode, 0)
+            directory.unlink()
+            parked.rename(directory)
+        s.start()
+        self.assertEqual(s.save(), saved)
 
     def test_delete_update_race_and_post_delete_reads(self):
         s = self.server

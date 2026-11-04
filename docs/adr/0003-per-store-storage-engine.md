@@ -9,3 +9,7 @@ The adapter uses the SDK's explicit `SyncMode::Every` setting. The pinned local 
 The embedded SurrealDB package and engine crates ship under the Business Source License 1.1. Their additional use grant and change terms are in the pinned package license. [SurrealDB 4.0.0 license](https://docs.rs/crate/surrealdb/4.0.0/source/LICENSE) · [Vendor license guide](https://surrealdb.com/license)
 
 The pinned SDK splits local paths at a literal `?` and does not decode an escaped path. Tuck rejects that character for SurrealDB stores before opening the engine. This preserves the requested path and prevents a path from changing connection options.
+
+SurrealKV sets its WAL directory to `0750` during startup. Tuck recovers that exact state only when the store root, directory owner, file types, and child permissions are valid. It restores `0700` before continuing. Other public permissions and symlinks are rejected. A process-kill regression covers this startup window.
+
+For small sets of scopes and terms, the adapter uses bound equality branches so SurrealDB can use exact composite-index lookups. Larger requests use the bounded scoped query. Both paths preserve the same scoring, result limits, and memory fields.
