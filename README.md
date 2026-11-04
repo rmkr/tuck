@@ -2,9 +2,9 @@
 
 Shared local memory for coding tools, written in Rust.
 
-Tuck is in the research and design stage. It will save useful memories with their sources, find relevant context, and support corrections and deletion across connected coding tools.
+Tuck is ready for implementation. The approved first version will save useful memories with their sources, find relevant context, and support corrections and deletion across connected coding tools.
 
-See [the research notes](docs/research.md) for the proposed design, database comparison, and sources.
+Start with [the approved specification](https://github.com/rmkr/tuck/issues/1) and [implementation plan](docs/implementation-plan.md). The [research notes](docs/research.md) contain the database comparison and sources.
 
 ## Development workflow
 
