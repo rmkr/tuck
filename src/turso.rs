@@ -4,6 +4,7 @@ use crate::{
     storage::{Mutation, Operation, Receipt, ReceiptState, SearchHit, SearchQuery, Storage},
 };
 use std::path::Path;
+use tokio::sync::Mutex;
 use turso::{Connection, Database, params};
 
 impl From<turso::Error> for Failure {
@@ -17,6 +18,8 @@ impl From<turso::Error> for Failure {
 
 pub struct TursoStorage {
     connection: Connection,
+    // Keep read statements serialized on the single Turso connection.
+    read_lock: Mutex<()>,
     _database: Database,
 }
 impl TursoStorage {
@@ -46,6 +49,7 @@ impl TursoStorage {
         }
         Ok(Self {
             connection,
+            read_lock: Mutex::new(()),
             _database: db,
         })
     }
@@ -114,6 +118,7 @@ impl TursoStorage {
 }
 impl Storage for TursoStorage {
     async fn read(&self, id: &str) -> Result<Option<Memory>> {
+        let _read = self.read_lock.lock().await;
         let mut rows = self
             .connection
             .query("SELECT record FROM memories WHERE id=?", [id])
@@ -124,6 +129,7 @@ impl Storage for TursoStorage {
         Ok(Some(serde_json::from_str(&row.get::<String>(0)?)?))
     }
     async fn search(&self, query: SearchQuery<'_>) -> Result<Vec<SearchHit>> {
+        let _read = self.read_lock.lock().await;
         let placeholders = |n| std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",");
         // Rank small ID rows before loading full records for the bounded result.
         let sql = format!(

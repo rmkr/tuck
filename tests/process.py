@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
@@ -487,6 +488,53 @@ class Contract(unittest.TestCase):
         with ThreadPoolExecutor(4) as pool:
             replies = list(pool.map(lambda _:s.call('memory_get', {'id':saved['id']}), range(12)))
         self.assertTrue(all(r['error']['code']=='not_found' for r in replies))
+
+    def test_concurrent_reads_observe_complete_revisions(self):
+        s = self.server
+        saved = s.save('snapshot', 'snapshot oldmarker')
+        ready = threading.Barrier(5)
+
+        def read_revisions(_):
+            ready.wait(timeout=10)
+            for _ in range(64):
+                hits = s.call('memory_search', {'query':'snapshot oldmarker', 'scopes':['project:a']})
+                self.assertIsInstance(hits, list)
+                self.assertLessEqual(len(hits), 1)
+                for hit in hits:
+                    marker = 'oldmarker' if hit['revision'] % 2 else 'newmarker'
+                    self.assertEqual(hit['id'], saved['id'])
+                    self.assertEqual(hit['excerpt'], 'snapshot ' + marker)
+                    self.assertEqual(hit['score'], 2 if marker == 'oldmarker' else 1)
+                record = s.call('memory_get', {'id':saved['id']})
+                if 'error' in record:
+                    self.assertEqual(record['error']['code'], 'not_found')
+                else:
+                    marker = 'oldmarker' if record['revision'] % 2 else 'newmarker'
+                    self.assertEqual(record['content'], 'snapshot ' + marker)
+
+        def change_revisions():
+            ready.wait(timeout=10)
+            for revision in range(2, 26):
+                marker = 'oldmarker' if revision % 2 else 'newmarker'
+                updated = s.call('memory_update', {
+                    'id':saved['id'], 'expected_revision':revision - 1,
+                    'operation_id':f'snapshot-{revision}', 'content':'snapshot ' + marker,
+                    'source':{'reference':'snapshot-fixture', 'origin':'user_statement'},
+                })
+                self.assertEqual(updated['revision'], revision)
+            deleted = s.call('memory_delete', {
+                'id':saved['id'], 'expected_revision':25, 'operation_id':'snapshot-delete',
+            })
+            self.assertEqual(deleted['outcome'], 'deleted')
+
+        with ThreadPoolExecutor(5) as pool:
+            readers = [pool.submit(read_revisions, i) for i in range(4)]
+            writer = pool.submit(change_revisions)
+            writer.result()
+            for reader in readers:
+                reader.result()
+        self.assertEqual(s.call('memory_search', {'query':'snapshot', 'scopes':['project:a']}), [])
+        self.assertEqual(s.save('snapshot', 'snapshot oldmarker')['outcome'], 'deleted')
 
     def test_current_grant_applies_to_old_receipts(self):
         s = self.server

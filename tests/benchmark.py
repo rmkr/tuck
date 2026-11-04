@@ -44,7 +44,7 @@ def query(server, token, index):
 lockfile = (Path(__file__).resolve().parents[1] / 'Cargo.lock').read_text()
 versions = {name:re.search(r'name = "' + name + r'"\nversion = "([^"]+)"', lockfile)[1] for name in ['turso', 'surrealdb', 'surrealkv']}
 engine = f"turso {versions['turso']}" if args.backend == 'turso' else f"SurrealDB {versions['surrealdb']} / SurrealKV {versions['surrealkv']}"
-durability = 'WAL, synchronous=FULL, one serialized connection' if args.backend == 'turso' else 'datastore_sync=every, immediate WAL sync before commit visibility, one serialized store'
+durability = 'WAL, synchronous=FULL, one serialized connection' if args.backend == 'turso' else 'datastore_sync=every, immediate WAL sync before commit visibility, concurrent reads, exclusive mutations'
 report = {'backend':args.backend, 'engine':engine, 'durability':durability,
           'binary_sha256':hashlib.sha256(Path(BINARY).read_bytes()).hexdigest(),
           'platform':platform.platform(), 'cpu':subprocess.check_output(['sysctl','-n','machdep.cpu.brand_string'], text=True).strip(),

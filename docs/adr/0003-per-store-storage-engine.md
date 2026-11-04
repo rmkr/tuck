@@ -13,3 +13,5 @@ The pinned SDK splits local paths at a literal `?` and does not decode an escape
 SurrealKV sets its WAL directory to `0750` during startup. Tuck recovers that exact state only when the store root, directory owner, file types, and child permissions are valid. It restores `0700` before continuing. Other public permissions and symlinks are rejected. A process-kill regression covers this startup window.
 
 For small sets of scopes and terms, the adapter uses bound equality branches so SurrealDB can use exact composite-index lookups. Larger requests use the bounded scoped query. Both paths preserve the same scoring, result limits, and memory fields.
+
+Concurrent read-only MCP calls share access to the memory store. Saves, corrections, and deletions hold exclusive access for the complete operation. This removes cross-client read waiting in SurrealDB while keeping each search result consistent with its record revisions. The Turso adapter keeps its own connection read gate because concurrent use of that connection returns storage errors.

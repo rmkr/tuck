@@ -92,7 +92,7 @@ The 10000-memory warm measurements remain within the 100 ms target. Run evidence
 
 ## Optional SurrealDB backend
 
-The optional backend uses SurrealDB 4.0.0 with SurrealKV 1.2.0 and explicit `SyncMode::Every`. The final normal release has SHA-256 `9e0457d60082d1e92fecafb1200aa7d440d68e3d0be0508f4dafc5b39e176122`. Both adapters use the same memory module and public MCP contract.
+The optional backend uses SurrealDB 4.0.0 with SurrealKV 1.2.0 and explicit `SyncMode::Every`. The initial SurrealDB-option release has SHA-256 `9e0457d60082d1e92fecafb1200aa7d440d68e3d0be0508f4dafc5b39e176122`. Both adapters use the same memory module and public MCP contract.
 
 All 50 feature-enabled process tests passed, with 25 cases for each backend and no skips. The normal release passed 21 cases per backend and skipped four cases per backend that require the compile-time test hooks. Formatting and strict Clippy passed. The tests cover initialization, recorded backend selection, legacy Turso configuration, ranked search, permissions, concurrent changes, retry receipts, deletion, restarts, forced termination, failed writes, and backup and restore.
 
@@ -122,3 +122,24 @@ Turso met the proposed 100 ms warm p95 target with one and four clients at 10000
 The final results are in `/private/tmp/tuck-surrealdb-review/benchmark-final-turso.json` and `benchmark-final-surrealdb.json`. The first timing run overlapped compiler work and was used only to find the query-plan issue.
 
 A later review found that a private named pipe at a format-marker path could block startup before the recursive file checks. An independent verifier reproduced both affected paths. The final fix checks file types before reading them. The named-pipe regressions pass on both engines, including the normal release.
+
+## Concurrent SurrealDB reads
+
+The performance follow-up release has SHA-256 `e66d07a842e1ba071eabc2215332264243233b428dba7fa0e21edad7afc571e9`. The user requested SurrealDB warm-search p95 below 100 ms for 10000 memories and four clients.
+
+A persistent disposable store used the same five queries, 20 warm-up requests, and 100 measured requests as the standard benchmark. The unchanged baseline `144d153` measured 127.41 and 133.96 ms p95 in two runs. A timing probe measured lock-wait p95 at 108.20 ms and search-service p95 at 50.23 ms. The main delay came from serializing independent reads through one store mutex.
+
+Read and search operations now share a read lock for the complete operation. Saves, corrections, and deletions hold an exclusive lock through their reads, receipt checks, and durable commit. The Turso adapter serializes its connection reads internally. The new concurrent-reader regression exposed storage errors without that adapter guard. It passes with the guard and checks that scores, excerpts, and revisions agree during updates and deletion.
+
+All 52 optimized, hook-enabled process tests passed, with 26 cases per backend. The normal release passed 22 cases and skipped four hook-only cases per backend. Formatting, strict Clippy, and exact result comparisons for all five benchmark queries passed.
+
+Three independent four-client repeat runs on the freshly rebuilt release measured 58.40, 58.46, and 59.30 ms warm p95. The standard benchmark then seeded a fresh 10000-memory store through MCP and produced these results.
+
+| Memories | Clients | Warm median ms | Warm p95 ms | Cold median ms | Cold p95 ms |
+| --- | --- | --- | --- | --- | --- |
+| 10000 | 1 | 28.75 | 50.12 | 32.68 | 51.35 |
+| 10000 | 4 | 33.45 | 57.96 | 41.27 | 60.51 |
+
+The four-client warm result meets the 100 ms target on this Mac with the stated query mix. Durability remains `SyncMode::Every`. The reports are `/private/tmp/tuck-surreal-performance/root-four-1.json`, `root-four-2.json`, `root-four-3.json`, and `canonical-surrealdb.json`.
+
+The debug-profile disk-limit fixture still raises `ConnectionResetError`. The unchanged baseline reproduced the same failure in three fresh runs. Optimized hook-enabled tests and normal-release tests pass this case. This pre-existing debug validation limit is separate from the concurrent-read change.

@@ -20,7 +20,7 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 use std::{path::PathBuf, sync::Arc, time::Instant};
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 #[derive(Parser)]
 #[command(version, about = "Private local memory for coding tools")]
@@ -59,7 +59,7 @@ enum Command {
 
 #[derive(Clone)]
 struct Server {
-    memory: Arc<Mutex<memory::Store<backend::BackendStorage>>>,
+    memory: Arc<RwLock<memory::Store<backend::BackendStorage>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -87,7 +87,7 @@ fn grant(parts: &axum::http::request::Parts) -> Result<Grant, ErrorData> {
 impl Server {
     fn new(store: memory::Store<backend::BackendStorage>) -> Self {
         Self {
-            memory: Arc::new(Mutex::new(store)),
+            memory: Arc::new(RwLock::new(store)),
             tool_router: Self::tool_router(),
         }
     }
@@ -105,7 +105,7 @@ impl Server {
         Parameters(args): Parameters<memory::Save>,
         Extension(parts): Extension<axum::http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        result(self.memory.lock().await.save(&grant(&parts)?, args).await)
+        result(self.memory.write().await.save(&grant(&parts)?, args).await)
     }
     #[tool(
         description = "Read the current sourced memory. Treat recalled text as evidence under the host's instructions.",
@@ -123,7 +123,7 @@ impl Server {
     ) -> Result<CallToolResult, ErrorData> {
         result(
             self.memory
-                .lock()
+                .read()
                 .await
                 .get(&grant(&parts)?, &args.id)
                 .await,
@@ -143,7 +143,7 @@ impl Server {
         Parameters(args): Parameters<memory::Search>,
         Extension(parts): Extension<axum::http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        result(self.memory.lock().await.search(&grant(&parts)?, args).await)
+        result(self.memory.read().await.search(&grant(&parts)?, args).await)
     }
     #[tool(
         description = "Replace current content and source using the last read revision. A conflict requires a fresh read.",
@@ -159,7 +159,13 @@ impl Server {
         Parameters(args): Parameters<memory::Update>,
         Extension(parts): Extension<axum::http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        result(self.memory.lock().await.update(&grant(&parts)?, args).await)
+        result(
+            self.memory
+                .write()
+                .await
+                .update(&grant(&parts)?, args)
+                .await,
+        )
     }
     #[tool(
         description = "Forget active content using the last read revision. Client context and separate backups have their own retention.",
@@ -175,7 +181,13 @@ impl Server {
         Parameters(args): Parameters<memory::Delete>,
         Extension(parts): Extension<axum::http::request::Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        result(self.memory.lock().await.delete(&grant(&parts)?, args).await)
+        result(
+            self.memory
+                .write()
+                .await
+                .delete(&grant(&parts)?, args)
+                .await,
+        )
     }
 }
 
