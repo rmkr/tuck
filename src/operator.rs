@@ -152,7 +152,7 @@ pub async fn init(home: &Path) -> Result<(), String> {
     if home.join("config.json").exists() || home.join("memory.db").exists() {
         return Err("Store already exists. Choose another --home or use serve.".into());
     }
-    crate::memory::Store::open(home)
+    crate::memory::Store::create(home)
         .await
         .map_err(|e| e.message.to_string())?;
     persist(home, &Config::default())?;

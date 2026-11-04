@@ -414,5 +414,50 @@ class Contract(unittest.TestCase):
         self.assertEqual(memory['content'], args['content'])
         self.assertEqual(memory['source'], args['source'])
 
+    def test_scope_syntax_is_validated_before_authorization(self):
+        s = self.server
+        for scope in ['', ' ', 'bad scope', 'project:?invalid', 'x' * 129]:
+            with self.subTest(scope=scope):
+                self.assertEqual(
+                    s.save(operation='scope-check', scope=scope)['error']['code'],
+                    'validation',
+                )
+                self.assertEqual(
+                    s.call('memory_search', {'query':'Widget', 'scopes':['project:a', scope]})['error']['code'],
+                    'validation',
+                )
+        self.assertEqual(
+            s.save(operation='scope-check', scope='project:ungranted')['error']['code'],
+            'forbidden',
+        )
+        self.assertEqual(
+            s.call('memory_search', {'query':'Widget', 'scopes':['project:ungranted']})['error']['code'],
+            'forbidden',
+        )
+
+    def test_serve_preserves_empty_and_version_zero_stores(self):
+        s = self.server
+        s.stop()
+        database = s.home / 'memory.db'
+        grants = (s.home / 'config.json').read_bytes()
+        for fixture in ['empty', 'version-zero']:
+            with self.subTest(fixture=fixture):
+                for path in s.home.glob('memory.db*'):
+                    path.unlink()
+                database.write_bytes(b'')
+                database.chmod(0o600)
+                if fixture == 'version-zero':
+                    connection = sqlite3.connect(database)
+                    connection.execute('CREATE TABLE owner_payload(value TEXT)')
+                    connection.execute("INSERT INTO owner_payload VALUES ('retain me')")
+                    connection.commit()
+                    connection.close()
+                original = database.read_bytes()
+                failure = s.command('serve')
+                self.assertNotEqual(failure.returncode, 0)
+                self.assertIn('restore', failure.stderr.lower())
+                self.assertEqual(database.read_bytes(), original)
+                self.assertEqual((s.home / 'config.json').read_bytes(), grants)
+
 if __name__ == '__main__':
     unittest.main()

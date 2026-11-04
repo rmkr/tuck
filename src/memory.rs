@@ -110,7 +110,7 @@ pub struct Store {
     _database: Database,
 }
 impl Store {
-    pub async fn open(home: &Path) -> Result<Self> {
+    async fn connect(home: &Path, read_only: bool) -> Result<Self> {
         for name in ["memory.db", "memory.db-wal", "memory.db-shm"] {
             let path = home.join(name);
             if path.symlink_metadata().is_ok() {
@@ -127,37 +127,65 @@ impl Store {
             path.to_str()
                 .ok_or_else(|| fail("path", "Store path must be UTF-8."))?,
         )
+        .read_only(read_only)
         .build()
         .await?;
-        let mut connection = db.connect()?;
-        connection.execute("PRAGMA synchronous=FULL", ()).await?;
-        let mut rows = connection.query("PRAGMA user_version", ()).await?;
+        let connection = db.connect()?;
+        if !read_only {
+            connection.execute("PRAGMA synchronous=FULL", ()).await?;
+        }
+        Ok(Self {
+            connection,
+            _database: db,
+        })
+    }
+    pub async fn open(home: &Path) -> Result<Self> {
+        let metadata = std::fs::symlink_metadata(home.join("memory.db")).map_err(|_| {
+            fail(
+                "storage_error",
+                "Database is missing. Restore the complete store before starting.",
+            )
+        })?;
+        if metadata.len() == 0 {
+            return Err(fail(
+                "schema",
+                "Database is empty. Restore the complete store before starting.",
+            ));
+        }
+        let store = Self::connect(home, true).await?;
+        let mut rows = store.connection.query("PRAGMA user_version", ()).await?;
         let version = rows
             .next()
             .await?
             .ok_or_else(|| fail("schema", "Cannot read schema version."))?
             .get::<i64>(0)?;
         drop(rows);
-        if version != 0 && version != 1 {
+        if version == 0 {
+            return Err(fail(
+                "schema",
+                "Database is uninitialized. Restore the complete store before starting.",
+            ));
+        }
+        if version != 1 {
             return Err(fail(
                 "schema",
                 "Unsupported newer schema. Use a compatible Tuck version.",
             ));
         }
-        if version == 0 {
-            let tx = connection.transaction().await?;
-            tx.execute("CREATE TABLE memories (id TEXT PRIMARY KEY, scope TEXT NOT NULL, revision INTEGER NOT NULL, record TEXT NOT NULL)", ()).await?;
-            tx.execute("CREATE TABLE terms (term TEXT NOT NULL, memory_id TEXT NOT NULL, PRIMARY KEY(term, memory_id))", ()).await?;
-            tx.execute("CREATE INDEX terms_memory ON terms(memory_id)", ())
-                .await?;
-            tx.execute("CREATE TABLE receipts (grant_id TEXT NOT NULL, operation TEXT NOT NULL, operation_id TEXT NOT NULL, fingerprint TEXT NOT NULL, scope TEXT NOT NULL, memory_id TEXT NOT NULL, revision INTEGER NOT NULL, outcome TEXT NOT NULL, PRIMARY KEY(grant_id, operation, operation_id))", ()).await?;
-            tx.execute("PRAGMA user_version=1", ()).await?;
-            tx.commit().await?;
-        }
-        Ok(Self {
-            connection,
-            _database: db,
-        })
+        drop(store);
+        Self::connect(home, false).await
+    }
+    pub async fn create(home: &Path) -> Result<Self> {
+        let mut store = Self::connect(home, false).await?;
+        let tx = store.connection.transaction().await?;
+        tx.execute("CREATE TABLE memories (id TEXT PRIMARY KEY, scope TEXT NOT NULL, revision INTEGER NOT NULL, record TEXT NOT NULL)", ()).await?;
+        tx.execute("CREATE TABLE terms (term TEXT NOT NULL, memory_id TEXT NOT NULL, PRIMARY KEY(term, memory_id))", ()).await?;
+        tx.execute("CREATE INDEX terms_memory ON terms(memory_id)", ())
+            .await?;
+        tx.execute("CREATE TABLE receipts (grant_id TEXT NOT NULL, operation TEXT NOT NULL, operation_id TEXT NOT NULL, fingerprint TEXT NOT NULL, scope TEXT NOT NULL, memory_id TEXT NOT NULL, revision INTEGER NOT NULL, outcome TEXT NOT NULL, PRIMARY KEY(grant_id, operation, operation_id))", ()).await?;
+        tx.execute("PRAGMA user_version=1", ()).await?;
+        tx.commit().await?;
+        Ok(store)
     }
     pub async fn get(&self, grant: &Grant, id: &str) -> Result<Value> {
         let memory = self.read(grant, id, false).await?;
@@ -186,6 +214,9 @@ impl Store {
     }
     pub async fn save(&mut self, grant: &Grant, args: Save) -> Result<Value> {
         validate_text(&args.content, &args.source, &args.operation_id)?;
+        if !operator::identifier(&args.scope) {
+            return Err(fail("validation", "Provide a valid scope ID."));
+        }
         if !grant.write || !grant.scopes.contains(&args.scope) {
             return Err(fail(
                 "forbidden",
@@ -246,11 +277,12 @@ impl Store {
             || args.query.len() > 1024
             || args.scopes.is_empty()
             || args.scopes.len() > 128
+            || args.scopes.iter().any(|scope| !operator::identifier(scope))
             || !(1..=20).contains(&limit)
         {
             return Err(fail(
                 "validation",
-                "Query must be 1–1024 bytes, scopes nonempty, and limit 1–20.",
+                "Query must be 1–1024 bytes, scope IDs valid and nonempty, and limit 1–20.",
             ));
         }
         if !grant.read || args.scopes.iter().any(|s| !grant.scopes.contains(s)) {
