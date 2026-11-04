@@ -1,8 +1,8 @@
 # Tuck
 
-Tuck shares selected memories between authenticated coding agents on one Mac. It runs locally and currently stores sourced memories through an embedded Turso adapter.
+Tuck shares selected memories between authenticated coding agents on one Mac. It runs locally with a choice of embedded Turso or SurrealDB storage.
 
-The memory module uses a database-independent storage interface. It owns access checks, validation, revisions, retry rules, and response formats. Storage adapters own persistence and atomic commits. An optional SurrealDB adapter is tracked in [#9](https://github.com/rmkr/tuck/issues/9).
+The memory module uses a database-independent storage interface. It owns access checks, validation, revisions, retry rules, and response formats. Each storage adapter connects that interface to one database engine and owns persistence and atomic commits.
 
 Agents connect directly over MCP, the Model Context Protocol. Each agent receives its own credential and explicit scopes. An editor is optional.
 
@@ -31,6 +31,21 @@ target/release/tuck grant add agent-a --scope project:example --read --write
 target/release/tuck grant add agent-b --scope project:example --read --write
 target/release/tuck serve
 ```
+
+`init` uses Turso by default. To create a separate SurrealDB store, select it when initializing the directory. SurrealDB runs inside Tuck and stores its data locally.
+
+```sh
+target/release/tuck --home "$HOME/.local/share/tuck-surrealdb" init --backend surrealdb
+target/release/tuck --home "$HOME/.local/share/tuck-surrealdb" scope add project:example
+target/release/tuck --home "$HOME/.local/share/tuck-surrealdb" grant add agent-a --scope project:example --read --write
+target/release/tuck --home "$HOME/.local/share/tuck-surrealdb" serve
+```
+
+The store records its backend choice. Later commands use that choice. Use a new directory to select another backend. Existing Turso stores continue to open without a new backend setting.
+
+A SurrealDB `--home` path must use UTF-8 and contain no `?`. The pinned SDK treats that character as the start of connection options. Spaces, Unicode, `#`, and `%` are supported.
+
+The embedded SurrealDB 4.0.0 package and engine use the Business Source License 1.1. Review the pinned license when distributing a product that includes this option. [Package license](https://docs.rs/crate/surrealdb/4.0.0/source/LICENSE) · [Vendor license guide](https://surrealdb.com/license)
 
 Each `grant add` command prints a new secret once. Keep it in the client's secret settings or an environment variable. Tuck stores only its hash. Keep secrets out of source control and shell history.
 

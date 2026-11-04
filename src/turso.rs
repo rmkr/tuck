@@ -204,7 +204,7 @@ impl Storage for TursoStorage {
                     ],
                 )
                 .await?;
-                pause("save:record").await;
+                pause("save:record").await?;
             }
             Operation::Update => {
                 tx.execute(
@@ -216,17 +216,17 @@ impl Storage for TursoStorage {
                     ],
                 )
                 .await?;
-                pause("update:record").await;
+                pause("update:record").await?;
                 tx.execute("DELETE FROM terms WHERE memory_id=?", [memory.id.clone()])
                     .await?;
             }
             Operation::Delete => {
                 tx.execute("DELETE FROM terms WHERE memory_id=?", [memory.id.clone()])
                     .await?;
-                pause("delete:index").await;
+                pause("delete:index").await?;
                 tx.execute("DELETE FROM memories WHERE id=?", [memory.id.clone()])
                     .await?;
-                pause("delete:record").await;
+                pause("delete:record").await?;
             }
         }
         if !matches!(mutation.operation, Operation::Delete) {
@@ -237,7 +237,7 @@ impl Storage for TursoStorage {
                 )
                 .await?;
             }
-            pause(&format!("{operation}:index")).await;
+            pause(&format!("{operation}:index")).await?;
         }
         tx.execute(
             "INSERT INTO receipts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -253,17 +253,23 @@ impl Storage for TursoStorage {
             ],
         )
         .await?;
-        pause(&format!("{operation}:before_commit")).await;
+        pause(&format!("{operation}:receipt")).await?;
+        pause(&format!("{operation}:before_commit")).await?;
         tx.commit().await?;
-        pause(&format!("{operation}:after_commit")).await;
+        pause(&format!("{operation}:after_commit")).await?;
         Ok(())
     }
 }
 
-async fn pause(_stage: &str) {
+async fn pause(_stage: &str) -> Result<()> {
+    #[cfg(feature = "test-hooks")]
+    if std::env::var("TUCK_TEST_FAIL").as_deref() == Ok(_stage) {
+        return Err(fail("storage_error", "Injected storage write failure."));
+    }
     #[cfg(feature = "test-hooks")]
     if std::env::var("TUCK_TEST_PAUSE").as_deref() == Ok(_stage) {
         eprintln!("TUCK_TEST_PAUSED {_stage}");
         std::future::pending::<()>().await;
     }
+    Ok(())
 }

@@ -1,4 +1,4 @@
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -19,9 +19,19 @@ pub struct Grant {
     pub read: bool,
     pub write: bool,
 }
+#[derive(Clone, Copy, Default, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    #[default]
+    Turso,
+    Surrealdb,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub backend: Backend,
     pub scopes: BTreeSet<String>,
     pub grants: Vec<Grant>,
 }
@@ -144,6 +154,7 @@ fn persist(home: &Path, config: &Config) -> Result<(), String> {
 }
 pub async fn init(
     home: &Path,
+    backend: Backend,
     initialize_storage: impl std::future::Future<Output = Result<(), String>>,
 ) -> Result<(), String> {
     if !home.exists() {
@@ -152,11 +163,20 @@ pub async fn init(
             .map_err(|_| "Cannot make --home private.".to_string())?;
     }
     let _lock = lock(home, "store.lock")?;
-    if home.join("config.json").exists() {
+    if fs::read_dir(home)
+        .map_err(|_| "Cannot read store directory.")?
+        .any(|entry| entry.map_or(true, |entry| entry.file_name() != "store.lock"))
+    {
         return Err("Store already exists. Choose another --home or use serve.".into());
     }
     initialize_storage.await?;
-    persist(home, &Config::default())?;
+    persist(
+        home,
+        &Config {
+            backend,
+            ..Config::default()
+        },
+    )?;
     println!("Initialized private Tuck store.");
     Ok(())
 }

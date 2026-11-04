@@ -10,13 +10,17 @@ import statistics
 import subprocess
 import sys
 import time
+import re
+import process
 from process import BINARY, Server
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--backend', choices=['turso', 'surrealdb'], default='turso')
 parser.add_argument('--samples', type=int, default=100)
 parser.add_argument('--cold-trials', type=int, default=5)
 parser.add_argument('--sizes', type=int, nargs='+', default=[1000, 10000])
 args = parser.parse_args()
+process.BACKEND = args.backend
 if args.cold_trials < 1 or args.samples < 20 or any(size < 1 for size in args.sizes):
     parser.error('use at least 20 samples and positive dataset sizes')
 
@@ -37,7 +41,11 @@ def query(server, token, index):
     return duration
 
 
-report = {'engine':'turso 0.8.3', 'durability':'WAL, synchronous=FULL, one serialized connection',
+lockfile = (Path(__file__).resolve().parents[1] / 'Cargo.lock').read_text()
+versions = {name:re.search(r'name = "' + name + r'"\nversion = "([^"]+)"', lockfile)[1] for name in ['turso', 'surrealdb', 'surrealkv']}
+engine = f"turso {versions['turso']}" if args.backend == 'turso' else f"SurrealDB {versions['surrealdb']} / SurrealKV {versions['surrealkv']}"
+durability = 'WAL, synchronous=FULL, one serialized connection' if args.backend == 'turso' else 'datastore_sync=every, immediate WAL sync before commit visibility, one serialized store'
+report = {'backend':args.backend, 'engine':engine, 'durability':durability,
           'binary_sha256':hashlib.sha256(Path(BINARY).read_bytes()).hexdigest(),
           'platform':platform.platform(), 'cpu':subprocess.check_output(['sysctl','-n','machdep.cpu.brand_string'], text=True).strip(),
           'dataset':'Short sourced decisions in 100 groups; four identifier queries and one broad keyword query; all seeding via MCP.',

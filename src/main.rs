@@ -1,6 +1,8 @@
+mod backend;
 mod memory;
 mod operator;
 mod storage;
+mod surreal;
 mod turso;
 
 use axum::{
@@ -33,7 +35,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Initialize a private empty store.
-    Init,
+    Init {
+        /// Storage engine for this new store.
+        #[arg(long, value_enum, default_value = "turso")]
+        backend: operator::Backend,
+    },
     /// Manage stable, explicit scope IDs.
     Scope {
         #[command(subcommand)]
@@ -53,7 +59,7 @@ enum Command {
 
 #[derive(Clone)]
 struct Server {
-    memory: Arc<Mutex<memory::Store<turso::TursoStorage>>>,
+    memory: Arc<Mutex<memory::Store<backend::BackendStorage>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -79,7 +85,7 @@ fn grant(parts: &axum::http::request::Parts) -> Result<Grant, ErrorData> {
 
 #[tool_router]
 impl Server {
-    fn new(store: memory::Store<turso::TursoStorage>) -> Self {
+    fn new(store: memory::Store<backend::BackendStorage>) -> Self {
         Self {
             memory: Arc::new(Mutex::new(store)),
             tool_router: Self::tool_router(),
@@ -245,11 +251,10 @@ async fn authenticate(
 
 async fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
-        Command::Init => {
-            operator::init(&cli.home, async {
-                turso::TursoStorage::create(&cli.home)
+        Command::Init { backend } => {
+            operator::init(&cli.home, backend, async {
+                backend::BackendStorage::create(&cli.home, backend)
                     .await
-                    .map(|_| ())
                     .map_err(|e| e.message.to_string())
             })
             .await
@@ -259,7 +264,7 @@ async fn run(cli: Cli) -> Result<(), String> {
         Command::Serve { port } => {
             let _lock = operator::lock(&cli.home, "store.lock")?;
             let config = Arc::new(operator::load(&cli.home)?);
-            let storage = turso::TursoStorage::open(&cli.home)
+            let storage = backend::BackendStorage::open(&cli.home, config.backend)
                 .await
                 .map_err(|e| e.message.to_string())?;
             let store = memory::Store::new(storage);
