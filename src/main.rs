@@ -1,5 +1,7 @@
 mod memory;
 mod operator;
+mod storage;
+mod turso;
 
 use axum::{
     extract::{Request, State},
@@ -51,7 +53,7 @@ enum Command {
 
 #[derive(Clone)]
 struct Server {
-    memory: Arc<Mutex<memory::Store>>,
+    memory: Arc<Mutex<memory::Store<turso::TursoStorage>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -77,7 +79,7 @@ fn grant(parts: &axum::http::request::Parts) -> Result<Grant, ErrorData> {
 
 #[tool_router]
 impl Server {
-    fn new(store: memory::Store) -> Self {
+    fn new(store: memory::Store<turso::TursoStorage>) -> Self {
         Self {
             memory: Arc::new(Mutex::new(store)),
             tool_router: Self::tool_router(),
@@ -243,20 +245,24 @@ async fn authenticate(
 
 async fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
-        Command::Init => operator::init(&cli.home).await,
+        Command::Init => {
+            operator::init(&cli.home, async {
+                turso::TursoStorage::create(&cli.home)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.message.to_string())
+            })
+            .await
+        }
         Command::Scope { action } => operator::scope(&cli.home, action),
         Command::Grant { action } => operator::grant(&cli.home, action),
         Command::Serve { port } => {
             let _lock = operator::lock(&cli.home, "store.lock")?;
             let config = Arc::new(operator::load(&cli.home)?);
-            if !cli.home.join("memory.db").is_file() {
-                return Err(
-                    "Database is missing. Restore the complete store before starting.".into(),
-                );
-            }
-            let store = memory::Store::open(&cli.home)
+            let storage = turso::TursoStorage::open(&cli.home)
                 .await
                 .map_err(|e| e.message.to_string())?;
+            let store = memory::Store::new(storage);
             let server = Server::new(store);
             use rmcp::transport::streamable_http_server::{
                 StreamableHttpServerConfig, StreamableHttpService,

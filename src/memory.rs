@@ -1,28 +1,21 @@
-use crate::operator::{self, Grant};
+use crate::{
+    operator::{self, Grant},
+    storage::{Mutation, Operation, Outcome, Receipt, SearchQuery, Storage},
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
-    path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
-use turso::{Connection, Database, params};
 
 #[derive(Debug)]
 pub struct Failure {
     pub code: &'static str,
     pub message: &'static str,
 }
-type Result<T> = std::result::Result<T, Failure>;
-impl From<turso::Error> for Failure {
-    fn from(_: turso::Error) -> Self {
-        Self {
-            code: "storage_error",
-            message: "Storage failed. Check free space and permissions, then restart Tuck.",
-        }
-    }
-}
+pub type Result<T> = std::result::Result<T, Failure>;
 impl From<serde_json::Error> for Failure {
     fn from(_: serde_json::Error) -> Self {
         Self {
@@ -31,7 +24,7 @@ impl From<serde_json::Error> for Failure {
         }
     }
 }
-fn fail(code: &'static str, message: &'static str) -> Failure {
+pub fn fail(code: &'static str, message: &'static str) -> Failure {
     Failure { code, message }
 }
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
@@ -93,99 +86,24 @@ pub struct Delete {
     pub operation_id: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
-struct Memory {
-    id: String,
-    scope: String,
-    kind: Kind,
-    content: String,
-    source: Source,
-    created_at: u64,
-    updated_at: u64,
-    revision: i64,
-    writer: String,
+pub struct Memory {
+    pub id: String,
+    pub scope: String,
+    pub kind: Kind,
+    pub content: String,
+    pub source: Source,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub revision: i64,
+    pub writer: String,
 }
 
-pub struct Store {
-    connection: Connection,
-    _database: Database,
+pub struct Store<S> {
+    storage: S,
 }
-impl Store {
-    async fn connect(home: &Path, read_only: bool) -> Result<Self> {
-        for name in ["memory.db", "memory.db-wal", "memory.db-shm"] {
-            let path = home.join(name);
-            if path.symlink_metadata().is_ok() {
-                operator::private(&path).map_err(|_| {
-                    fail(
-                        "permissions",
-                        "Database files must be private and owned by you.",
-                    )
-                })?;
-            }
-        }
-        let path = home.join("memory.db");
-        let db = turso::Builder::new_local(
-            path.to_str()
-                .ok_or_else(|| fail("path", "Store path must be UTF-8."))?,
-        )
-        .read_only(read_only)
-        .build()
-        .await?;
-        let connection = db.connect()?;
-        if !read_only {
-            connection.execute("PRAGMA synchronous=FULL", ()).await?;
-        }
-        Ok(Self {
-            connection,
-            _database: db,
-        })
-    }
-    pub async fn open(home: &Path) -> Result<Self> {
-        let metadata = std::fs::symlink_metadata(home.join("memory.db")).map_err(|_| {
-            fail(
-                "storage_error",
-                "Database is missing. Restore the complete store before starting.",
-            )
-        })?;
-        if metadata.len() == 0 {
-            return Err(fail(
-                "schema",
-                "Database is empty. Restore the complete store before starting.",
-            ));
-        }
-        let store = Self::connect(home, true).await?;
-        let mut rows = store.connection.query("PRAGMA user_version", ()).await?;
-        let version = rows
-            .next()
-            .await?
-            .ok_or_else(|| fail("schema", "Cannot read schema version."))?
-            .get::<i64>(0)?;
-        drop(rows);
-        if version == 0 {
-            return Err(fail(
-                "schema",
-                "Database is uninitialized. Restore the complete store before starting.",
-            ));
-        }
-        if version != 1 {
-            return Err(fail(
-                "schema",
-                "Unsupported newer schema. Use a compatible Tuck version.",
-            ));
-        }
-        drop(store);
-        Self::connect(home, false).await
-    }
-    pub async fn create(home: &Path) -> Result<Self> {
-        let mut store = Self::connect(home, false).await?;
-        let tx = store.connection.transaction().await?;
-        tx.execute("CREATE TABLE memories (id TEXT PRIMARY KEY, scope TEXT NOT NULL, revision INTEGER NOT NULL, record TEXT NOT NULL)", ()).await?;
-        tx.execute("CREATE TABLE terms (term TEXT NOT NULL, memory_id TEXT NOT NULL, PRIMARY KEY(term, memory_id))", ()).await?;
-        tx.execute("CREATE INDEX terms_memory ON terms(memory_id)", ())
-            .await?;
-        tx.execute("CREATE TABLE receipts (grant_id TEXT NOT NULL, operation TEXT NOT NULL, operation_id TEXT NOT NULL, fingerprint TEXT NOT NULL, scope TEXT NOT NULL, memory_id TEXT NOT NULL, revision INTEGER NOT NULL, outcome TEXT NOT NULL, PRIMARY KEY(grant_id, operation, operation_id))", ()).await?;
-        tx.execute("PRAGMA user_version=1", ()).await?;
-        tx.commit().await?;
-        Ok(store)
+impl<S: Storage> Store<S> {
+    pub fn new(storage: S) -> Self {
+        Self { storage }
     }
     pub async fn get(&self, grant: &Grant, id: &str) -> Result<Value> {
         let memory = self.read(grant, id, false).await?;
@@ -198,15 +116,11 @@ impl Store {
         if (write && !grant.write) || (!write && !grant.read) {
             return Err(fail("forbidden", "Grant does not permit this operation."));
         }
-        let mut rows = self
-            .connection
-            .query("SELECT record FROM memories WHERE id=?", [id])
-            .await?;
-        let row = rows
-            .next()
+        let memory = self
+            .storage
+            .read(id)
             .await?
             .ok_or_else(|| fail("not_found", "Memory not found."))?;
-        let memory: Memory = serde_json::from_str(&row.get::<String>(0)?)?;
         if !grant.scopes.contains(&memory.scope) {
             return Err(fail("not_found", "Memory not found."));
         }
@@ -225,7 +139,7 @@ impl Store {
         }
         let fingerprint = operator::hash(&serde_json::to_vec(&args)?);
         if let Some(receipt) = self
-            .receipt(grant, "save", &args.operation_id, &fingerprint)
+            .receipt(grant, Operation::Save, &args.operation_id, &fingerprint)
             .await?
         {
             return Ok(receipt);
@@ -242,34 +156,14 @@ impl Store {
             revision: 1,
             writer: grant.id.clone(),
         };
-        let tx = self.connection.transaction().await?;
-        tx.execute(
-            "INSERT INTO memories VALUES (?, ?, ?, ?)",
-            params![
-                memory.id.clone(),
-                memory.scope.clone(),
-                memory.revision,
-                serde_json::to_string(&memory)?
-            ],
-        )
-        .await?;
-        pause("save:record").await;
-        index(&tx, &memory).await?;
-        pause("save:index").await;
-        record_receipt(
-            &tx,
+        self.commit(
             grant,
-            "save",
+            Operation::Save,
             &args.operation_id,
             &fingerprint,
             &memory,
-            "saved",
         )
-        .await?;
-        pause("save:before_commit").await;
-        tx.commit().await?;
-        pause("save:after_commit").await;
-        Ok(json!({"id":memory.id,"revision":1,"outcome":"saved"}))
+        .await
     }
     pub async fn search(&self, grant: &Grant, args: Search) -> Result<Value> {
         let limit = args.limit.unwrap_or(5);
@@ -295,76 +189,55 @@ impl Store {
         if terms.is_empty() {
             return Ok(json!([]));
         }
-        let placeholders = |n| std::iter::repeat_n("?", n).collect::<Vec<_>>().join(",");
-        // Rank small ID rows before loading full records for the bounded result.
-        let sql = format!(
-            "SELECT m.record, ranked.score FROM (
-                SELECT t.memory_id, COUNT(*) AS score
-                FROM terms t JOIN memories allowed ON allowed.id=t.memory_id
-                WHERE t.term IN ({}) AND allowed.scope IN ({})
-                GROUP BY t.memory_id ORDER BY score DESC, t.memory_id ASC LIMIT ?
-            ) ranked JOIN memories m ON m.id=ranked.memory_id
-            ORDER BY ranked.score DESC, ranked.memory_id ASC",
-            placeholders(terms.len()),
-            placeholders(args.scopes.len())
-        );
-        let mut values = terms
-            .into_iter()
-            .chain(args.scopes)
-            .map(turso::Value::Text)
-            .collect::<Vec<_>>();
-        values.push(turso::Value::Integer(limit as i64));
-        let mut rows = self
-            .connection
-            .query(&sql, turso::params_from_iter(values))
+        let hits = self
+            .storage
+            .search(SearchQuery {
+                terms: &terms,
+                scopes: &args.scopes,
+                limit,
+            })
             .await?;
-        let mut results = Vec::new();
-        while let Some(row) = rows.next().await? {
-            let memory: Memory = serde_json::from_str(&row.get::<String>(0)?)?;
-            results.push(json!({"id":memory.id,"scope":memory.scope,"kind":memory.kind,"excerpt":memory.content.chars().take(512).collect::<String>(),"source":memory.source,"created_at":memory.created_at,"updated_at":memory.updated_at,"revision":memory.revision,"writer":memory.writer,"score":row.get::<i64>(1)?}));
-        }
+        let results = hits.into_iter().map(|hit| {
+            let memory = hit.memory;
+            json!({"id":memory.id,"scope":memory.scope,"kind":memory.kind,"excerpt":memory.content.chars().take(512).collect::<String>(),"source":memory.source,"created_at":memory.created_at,"updated_at":memory.updated_at,"revision":memory.revision,"writer":memory.writer,"score":hit.score})
+        }).collect();
         Ok(Value::Array(results))
     }
     async fn receipt(
         &self,
         grant: &Grant,
-        operation: &str,
+        operation: Operation,
         operation_id: &str,
         fingerprint: &str,
     ) -> Result<Option<Value>> {
-        let mut rows = self.connection.query("SELECT fingerprint, scope, memory_id, revision, outcome FROM receipts WHERE grant_id=? AND operation=? AND operation_id=?", params![grant.id.clone(), operation, operation_id]).await?;
-        let Some(row) = rows.next().await? else {
+        let Some(state) = self
+            .storage
+            .receipt(&grant.id, operation, operation_id)
+            .await?
+        else {
             return Ok(None);
         };
-        if !grant.write || !grant.scopes.contains(&row.get::<String>(1)?) {
+        let mut receipt = state.receipt;
+        if !grant.write || !grant.scopes.contains(&receipt.scope) {
             return Err(fail("forbidden", "Grant does not permit this operation."));
         }
-        if row.get::<String>(0)? != fingerprint {
+        if receipt.fingerprint != fingerprint {
             return Err(fail(
                 "conflict",
                 "Operation ID was already used with different input.",
             ));
         }
-        let id = row.get::<String>(2)?;
-        let mut present = self
-            .connection
-            .query("SELECT id FROM memories WHERE id=?", [id.clone()])
-            .await?;
-        let outcome = if present.next().await?.is_none() {
-            "deleted".to_string()
-        } else {
-            row.get::<String>(4)?
-        };
-        Ok(Some(
-            json!({"id":id,"revision":row.get::<i64>(3)?,"outcome":outcome}),
-        ))
+        if !state.memory_exists {
+            receipt.outcome = Outcome::Deleted;
+        }
+        Ok(Some(receipt.response()))
     }
     pub async fn update(&mut self, grant: &Grant, args: Update) -> Result<Value> {
         validate_text(&args.content, &args.source, &args.operation_id)?;
         validate_mutation(&args.id, args.expected_revision)?;
         let fingerprint = operator::hash(&serde_json::to_vec(&args)?);
         if let Some(receipt) = self
-            .receipt(grant, "update", &args.operation_id, &fingerprint)
+            .receipt(grant, Operation::Update, &args.operation_id, &fingerprint)
             .await?
         {
             return Ok(receipt);
@@ -381,35 +254,14 @@ impl Store {
         memory.source = args.source;
         memory.updated_at = timestamp();
         memory.writer = grant.id.clone();
-        let tx = self.connection.transaction().await?;
-        tx.execute(
-            "UPDATE memories SET revision=?, record=? WHERE id=?",
-            params![
-                memory.revision,
-                serde_json::to_string(&memory)?,
-                memory.id.clone()
-            ],
-        )
-        .await?;
-        pause("update:record").await;
-        tx.execute("DELETE FROM terms WHERE memory_id=?", [memory.id.clone()])
-            .await?;
-        index(&tx, &memory).await?;
-        pause("update:index").await;
-        record_receipt(
-            &tx,
+        self.commit(
             grant,
-            "update",
+            Operation::Update,
             &args.operation_id,
             &fingerprint,
             &memory,
-            "updated",
         )
-        .await?;
-        pause("update:before_commit").await;
-        tx.commit().await?;
-        pause("update:after_commit").await;
-        Ok(json!({"id":memory.id,"revision":memory.revision,"outcome":"updated"}))
+        .await
     }
     pub async fn delete(&mut self, grant: &Grant, args: Delete) -> Result<Value> {
         validate_mutation(&args.id, args.expected_revision)?;
@@ -418,7 +270,7 @@ impl Store {
         }
         let fingerprint = operator::hash(&serde_json::to_vec(&args)?);
         if let Some(receipt) = self
-            .receipt(grant, "delete", &args.operation_id, &fingerprint)
+            .receipt(grant, Operation::Delete, &args.operation_id, &fingerprint)
             .await?
         {
             return Ok(receipt);
@@ -430,29 +282,55 @@ impl Store {
                 "Revision changed. Read the current memory before retrying.",
             ));
         }
-        let tx = self.connection.transaction().await?;
-        tx.execute("DELETE FROM terms WHERE memory_id=?", [memory.id.clone()])
-            .await?;
-        pause("delete:index").await;
-        tx.execute("DELETE FROM memories WHERE id=?", [memory.id.clone()])
-            .await?;
-        pause("delete:record").await;
-        record_receipt(
-            &tx,
+        self.commit(
             grant,
-            "delete",
+            Operation::Delete,
             &args.operation_id,
             &fingerprint,
             &memory,
-            "deleted",
         )
-        .await?;
-        pause("delete:before_commit").await;
-        tx.commit().await?;
-        pause("delete:after_commit").await;
-        Ok(json!({"id":memory.id,"revision":memory.revision,"outcome":"deleted"}))
+        .await
+    }
+    async fn commit(
+        &mut self,
+        grant: &Grant,
+        operation: Operation,
+        operation_id: &str,
+        fingerprint: &str,
+        memory: &Memory,
+    ) -> Result<Value> {
+        let receipt = Receipt {
+            grant_id: grant.id.clone(),
+            operation_id: operation_id.to_owned(),
+            fingerprint: fingerprint.to_owned(),
+            scope: memory.scope.clone(),
+            memory_id: memory.id.clone(),
+            revision: memory.revision,
+            outcome: operation.outcome(),
+        };
+        let terms = match operation {
+            Operation::Save | Operation::Update => {
+                tokens(&format!("{} {}", memory.content, memory.source.reference))
+            }
+            Operation::Delete => BTreeSet::new(),
+        };
+        self.storage
+            .commit(Mutation {
+                operation,
+                memory,
+                terms,
+                receipt: &receipt,
+            })
+            .await?;
+        Ok(receipt.response())
     }
 }
+impl Receipt {
+    fn response(&self) -> Value {
+        json!({"id":self.memory_id,"revision":self.revision,"outcome":self.outcome})
+    }
+}
+
 fn timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -483,17 +361,6 @@ fn tokens(text: &str) -> BTreeSet<String> {
         .map(str::to_owned)
         .collect()
 }
-async fn index(tx: &turso::transaction::Transaction<'_>, memory: &Memory) -> Result<()> {
-    for term in tokens(&format!("{} {}", memory.content, memory.source.reference)) {
-        tx.execute(
-            "INSERT INTO terms VALUES (?, ?)",
-            params![term, memory.id.clone()],
-        )
-        .await?;
-    }
-    Ok(())
-}
-
 fn validate_mutation(id: &str, revision: i64) -> Result<()> {
     if !operator::identifier(id) || !(1..i64::MAX).contains(&revision) {
         return Err(fail(
@@ -502,37 +369,4 @@ fn validate_mutation(id: &str, revision: i64) -> Result<()> {
         ));
     }
     Ok(())
-}
-async fn record_receipt(
-    tx: &turso::transaction::Transaction<'_>,
-    grant: &Grant,
-    operation: &str,
-    operation_id: &str,
-    fingerprint: &str,
-    memory: &Memory,
-    outcome: &str,
-) -> Result<()> {
-    tx.execute(
-        "INSERT INTO receipts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        params![
-            grant.id.clone(),
-            operation,
-            operation_id,
-            fingerprint,
-            memory.scope.clone(),
-            memory.id.clone(),
-            memory.revision,
-            outcome
-        ],
-    )
-    .await?;
-    Ok(())
-}
-
-async fn pause(_stage: &str) {
-    #[cfg(feature = "test-hooks")]
-    if std::env::var("TUCK_TEST_PAUSE").as_deref() == Ok(_stage) {
-        eprintln!("TUCK_TEST_PAUSED {_stage}");
-        std::future::pending::<()>().await;
-    }
 }

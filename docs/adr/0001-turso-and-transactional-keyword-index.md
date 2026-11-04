@@ -1,5 +1,7 @@
 # Turso with a transactional keyword index
 
+Turso remains the current storage adapter. [ADR 0002](0002-database-independent-storage.md) records the later decision to keep memory rules independent of the engine.
+
 Tuck uses pinned Turso 0.8.3 with one database-owning process and one serialized connection. The public MCP tests passed persistence, source and identifier search, concurrent corrections, retry receipts, deletion, and twelve forced-stop positions across save, update, and delete.
 
 Search uses a regular indexed table of unique terms. Content, terms, revisions, and operation receipts commit in one transaction with `synchronous=FULL`. This meets the initial keyword contract without experimental full-text search or multi-process coordination. SurrealDB remains unevaluated because the required Turso correctness and search checks passed. Performance evidence is separate from this correctness decision.

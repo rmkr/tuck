@@ -142,19 +142,20 @@ fn persist(home: &Path, config: &Config) -> Result<(), String> {
         "Cannot commit configuration. Check available space and permissions.".into()
     })
 }
-pub async fn init(home: &Path) -> Result<(), String> {
+pub async fn init(
+    home: &Path,
+    initialize_storage: impl std::future::Future<Output = Result<(), String>>,
+) -> Result<(), String> {
     if !home.exists() {
         fs::create_dir_all(home).map_err(|_| "Cannot create --home directory.".to_string())?;
         fs::set_permissions(home, fs::Permissions::from_mode(0o700))
             .map_err(|_| "Cannot make --home private.".to_string())?;
     }
     let _lock = lock(home, "store.lock")?;
-    if home.join("config.json").exists() || home.join("memory.db").exists() {
+    if home.join("config.json").exists() {
         return Err("Store already exists. Choose another --home or use serve.".into());
     }
-    crate::memory::Store::create(home)
-        .await
-        .map_err(|e| e.message.to_string())?;
+    initialize_storage.await?;
     persist(home, &Config::default())?;
     println!("Initialized private Tuck store.");
     Ok(())

@@ -1,6 +1,8 @@
 # Tuck
 
-Tuck shares selected memories between authenticated coding agents on one Mac. It runs locally and stores sourced memories in an embedded Turso database.
+Tuck shares selected memories between authenticated coding agents on one Mac. It runs locally and currently stores sourced memories through an embedded Turso adapter.
+
+The memory module uses a database-independent storage interface. It owns access checks, validation, revisions, retry rules, and response formats. Storage adapters own persistence and atomic commits. An optional SurrealDB adapter is tracked in [#9](https://github.com/rmkr/tuck/issues/9).
 
 Agents connect directly over MCP, the Model Context Protocol. Each agent receives its own credential and explicit scopes. An editor is optional.
 
@@ -181,4 +183,4 @@ python3 tests/benchmark.py target/release/tuck > benchmark.json
 
 It seeds 1000 and 10000 memories through MCP. It uses one and four concurrent clients, reports median and p95 latency, and includes identifier and broad-keyword queries. Cold means the first request after process restart. It keeps the operating-system file cache. The proposed warm-search target is p95 at or below 100 ms over 10000 memories. Timing is evidence for the measured Mac, separate from correctness assertions.
 
-The [storage decision](docs/adr/0001-turso-and-transactional-keyword-index.md) records the correctness gate. The [validation record](docs/validation.md) contains the process tests, headless two-agent workflow, benchmark, and synthetic memory-enabled comparison. The measured 10000-memory warm p95 was 22.52 ms with one client and 63.91 ms with four clients on this Mac. Day-to-day productivity remains unmeasured. The [approved specification](https://github.com/rmkr/tuck/issues/1) defines acceptance.
+The [Turso decision](docs/adr/0001-turso-and-transactional-keyword-index.md) records the original correctness gate. The [storage interface decision](docs/adr/0002-database-independent-storage.md) records how another engine can replace it. The [validation record](docs/validation.md) contains the process tests, headless two-agent workflow, benchmark, and synthetic memory-enabled comparison. The measured 10000-memory warm p95 was 22.52 ms with one client and 63.91 ms with four clients on this Mac. Day-to-day productivity remains unmeasured. The [approved specification](https://github.com/rmkr/tuck/issues/1) defines acceptance.
