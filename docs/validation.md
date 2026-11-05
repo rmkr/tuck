@@ -142,4 +142,27 @@ Three independent four-client repeat runs on the freshly rebuilt release measure
 
 The four-client warm result meets the 100 ms target on this Mac with the stated query mix. Durability remains `SyncMode::Every`. The reports are `/private/tmp/tuck-surreal-performance/root-four-1.json`, `root-four-2.json`, `root-four-3.json`, and `canonical-surrealdb.json`.
 
-The debug-profile disk-limit fixture still raises `ConnectionResetError`. The unchanged baseline reproduced the same failure in three fresh runs. Optimized hook-enabled tests and normal-release tests pass this case. This pre-existing debug validation limit is separate from the concurrent-read change.
+At this stage, the debug-profile disk-limit fixture raised `ConnectionResetError`. The unchanged baseline reproduced the same failure in three fresh runs. Optimized hook-enabled tests and normal-release tests passed this case. The later debug recovery follow-up below resolves this failure.
+
+## Debug recovery follow-up
+
+The rebuilt `f4034179` baseline reproduced the disk-limit failure. The fixture also limits writes to its log file. Sending diagnostics to `/dev/null` under the same file-size limit returned the expected `storage_error`. A new public MCP regression reproduced the connection reset with a closed stderr pipe and unrestricted database writes.
+
+Server diagnostics now tolerate failed stderr writes. The regression verifies a successful save, a read, a conflict response, and a normal restart followed by a read and replay of the original save receipt. The existing disk-limit test also verifies that the prior committed memory survives restart.
+
+The full debug run exposed a second baseline failure. A SurrealDB update exhausted a Tokio worker's stack and aborted the process. The same baseline update passed with a 10 MiB worker stack. Tuck now builds its Tokio runtime with that stack size, following the pinned SurrealDB 4.0.0 embedded-runtime example. Final checks ran with `RUST_MIN_STACK` unset.
+
+Both debug and release profiles passed all 54 hook-enabled process tests, with 27 tests per backend. Each normal profile passed 46 tests and skipped the eight hook-only cases. Formatting and strict Clippy also passed. The normal release binary has SHA-256 `1d821ae22f977a2e0330de1b171e036893cd664dc903321d94947764e7089087`.
+
+The checks used Rust 1.98.0 on the same Mac. The build used `CARGO_HOME=/private/tmp/tuck-cargo`, `CARGO_TARGET_DIR=/private/tmp/tuck-surreal-target`, and the toolchain's library directory in `DYLD_LIBRARY_PATH`. Run the same checks with these commands.
+
+```sh
+cargo fmt --all --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked
+cargo test --locked --features test-hooks
+cargo test --release --locked
+cargo test --release --locked --features test-hooks
+```
+
+The logs are in `/private/tmp/tuck-debug-recovery/`. Debug linking reported the existing large unwind-section warning. The debug builds and process tests completed. This follow-up did not repeat the live-agent trials, benchmarks, or physical power-loss checks.

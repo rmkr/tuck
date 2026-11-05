@@ -34,10 +34,10 @@ flowchart LR
     T5 --> T6
 ```
 
-Start with the first ticket. Safe corrections and operator recovery can proceed independently after scoped sharing. Final validation waits for forgetting and recovery.
+The delivery table records the completed implementation order. Safe corrections and operator recovery followed scoped sharing. Final validation covered forgetting and recovery.
 
 ## Test approach
 
 Use the approved public MCP test seam with an isolated real database and the running process. Add one failing behavior test, implement that behavior, and repeat. Run the code-review skill before committing each implementation slice.
 
-The final ticket checks independent headless agent/client sessions, restart behavior, measured latency, and memory-enabled versus memory-disabled work. These checks remain pending until implementation.
+The v1 tickets and storage-backend follow-ups are complete. The [validation record](validation.md) contains the independent headless agent/client checks, restart tests, latency measurements, and memory-enabled comparisons.
