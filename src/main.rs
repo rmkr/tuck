@@ -19,7 +19,7 @@ use rmcp::{
     model::*,
     tool, tool_handler, tool_router,
 };
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{io::Write, path::PathBuf, sync::Arc, time::Instant};
 use tokio::sync::RwLock;
 
 #[derive(Parser)]
@@ -221,7 +221,8 @@ impl ServerHandler for Server {
             Ok(CallToolResponse::Complete(result)) if result.is_error != Some(true) => "ok",
             _ => "error",
         };
-        eprintln!(
+        let _ = writeln!(
+            std::io::stderr(),
             "operation={operation} status={status} elapsed_ms={}",
             start.elapsed().as_millis()
         );
@@ -253,7 +254,8 @@ async fn authenticate(
         .ok_or(StatusCode::UNAUTHORIZED)?;
     request.extensions_mut().insert(grant);
     let response = next.run(request).await;
-    eprintln!(
+    let _ = writeln!(
+        std::io::stderr(),
         "operation=mcp status={} elapsed_ms={}",
         response.status().as_u16(),
         start.elapsed().as_millis()
@@ -305,7 +307,10 @@ async fn run(cli: Cli) -> Result<(), String> {
                     "Cannot bind loopback port. Stop the other listener or choose --port."
                         .to_string()
                 })?;
-            eprintln!("Tuck listening on http://127.0.0.1:{port}/mcp");
+            let _ = writeln!(
+                std::io::stderr(),
+                "Tuck listening on http://127.0.0.1:{port}/mcp"
+            );
             axum::serve(listener, app)
                 .with_graceful_shutdown(async move {
                     let mut terminate =
@@ -320,14 +325,19 @@ async fn run(cli: Cli) -> Result<(), String> {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     // All newly created database sidecars must be private from their first write.
     unsafe {
         libc::umask(0o077);
     }
-    if let Err(message) = run(Cli::parse()).await {
-        eprintln!("{message}");
+    // Embedded SurrealDB needs a larger worker stack for debug builds.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(10 * 1024 * 1024)
+        .build()
+        .expect("Tokio runtime");
+    if let Err(message) = runtime.block_on(run(Cli::parse())) {
+        let _ = writeln!(std::io::stderr(), "{message}");
         std::process::exit(1);
     }
 }

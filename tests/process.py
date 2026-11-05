@@ -52,7 +52,7 @@ class Server:
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    def start(self, pause=None, file_limit=None, fail=None, assert_index=False, wait_for_pause=False):
+    def start(self, pause=None, file_limit=None, fail=None, assert_index=False, wait_for_pause=False, stderr=None):
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             self.port = sock.getsockname()[1]
@@ -68,7 +68,7 @@ class Server:
         def set_limits():
             signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
             resource.setrlimit(resource.RLIMIT_FSIZE, (file_limit, file_limit))
-        self.process = subprocess.Popen([BINARY, '--home', str(self.home), 'serve', '--port', str(self.port)], stdout=self.logs, stderr=self.logs, env=environment, preexec_fn=set_limits if file_limit is not None else None)
+        self.process = subprocess.Popen([BINARY, '--home', str(self.home), 'serve', '--port', str(self.port)], stdout=self.logs, stderr=self.logs if stderr is None else stderr, env=environment, preexec_fn=set_limits if file_limit is not None else None)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
@@ -548,6 +548,21 @@ class Contract(unittest.TestCase):
         s.start()
         self.assertEqual(s.save()['error']['code'], 'forbidden')
         self.assertEqual(s.call('memory_get', {'id':saved['id']})['error']['code'], 'not_found')
+
+    def test_unwritable_logs_do_not_interrupt_requests(self):
+        s = self.server
+        s.stop()
+        reader, writer = os.pipe()
+        os.close(reader)
+        with os.fdopen(writer, 'wb') as closed_pipe:
+            s.start(stderr=closed_pipe)
+            saved = s.save()
+            self.assertEqual(s.call('memory_get', {'id':saved['id']})['revision'], 1)
+            self.assertEqual(s.save(content='Changed content.')['error']['code'], 'conflict')
+        s.stop()
+        s.start()
+        self.assertEqual(s.call('memory_get', {'id':saved['id']})['revision'], 1)
+        self.assertEqual(s.save(), saved)
 
     def test_disk_write_failure_preserves_previous_commit(self):
         s = self.server
